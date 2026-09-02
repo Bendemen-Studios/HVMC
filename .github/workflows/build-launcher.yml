@@ -8,7 +8,6 @@ on:
       - 'HVMCUpdater.ps1'
       - 'version.txt'
       - '.github/workflows/build-launcher.yml'
-  push:
     tags: [ 'v*.*' ]
   workflow_dispatch:
 
