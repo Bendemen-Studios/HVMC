@@ -1,0 +1,10 @@
+{
+  "clientId": "PASTE-YOUR-MICROSOFT-APP-CLIENT-ID-HERE",
+  "authority": "https://login.microsoftonline.com/common",
+  "scopes": [
+    "openid",
+    "profile",
+    "offline_access",
+    "https://graph.microsoft.com/User.Read"
+  ]
+}
