@@ -8,6 +8,9 @@ on:
       - '.github/workflows/build-launcher.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -26,8 +29,19 @@ jobs:
       - name: Publish
         run: dotnet publish launcher/HVMCLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/HVMCLauncher
 
-      - name: Upload launcher
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: HVMCLauncher-win-x64
           path: artifacts/HVMCLauncher/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: launcher-build-${{ github.run_number }}
+          name: HVMC Launcher Build ${{ github.run_number }}
+          generate_release_notes: false
+          prerelease: false
+          files: artifacts/HVMCLauncher/HVMCLauncher.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
