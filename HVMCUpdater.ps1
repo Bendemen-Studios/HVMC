@@ -34,7 +34,7 @@ function Download([string]$Url,[string]$Destination) {
         Move-Item $tmp $Destination -Force
     } catch {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        throw "Download failed for $Destination: $($_.Exception.Message)"
+        throw "Download failed for ${Destination}: $($_.Exception.Message)"
     }
 }
 function ReadJson([string]$Path) {
@@ -48,9 +48,7 @@ function CollectFiles([string]$RemotePath='content') {
     $result = @()
     foreach ($item in @(GitHub $RemotePath)) {
         if ($item.type -eq 'dir') { $result += CollectFiles ([string]$item.path) }
-        elseif ($item.type -eq 'file') {
-            $result += [pscustomobject]@{ path=[string]$item.path; sha=[string]$item.sha; download=[string]$item.download_url }
-        }
+        elseif ($item.type -eq 'file') { $result += [pscustomobject]@{ path=[string]$item.path; sha=[string]$item.sha; download=[string]$item.download_url } }
     }
     return $result
 }
@@ -67,7 +65,6 @@ function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
         return $hex -ieq $ExpectedSha
     } catch { return $false }
 }
-
 function Ensure-OfficialLauncher {
     $paths = @(
         (Join-Path ${env:ProgramFiles(x86)} 'Minecraft Launcher\MinecraftLauncher.exe'),
@@ -102,41 +99,29 @@ try {
     Log 'HVMC updater gestart.'
     $remoteVersion = ([string](Invoke-RestMethod -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-Updater'} -TimeoutSec 20)).Trim()
     Log "Beschikbare HVMC versie: $remoteVersion"
-
     $remoteFiles = @(CollectFiles 'content')
     $oldManifest = ReadJson $ManifestPath
     $oldEntries = @{}
-    if ($oldManifest -and $oldManifest.files) {
-        foreach ($entry in @($oldManifest.files)) { $oldEntries[[string]$entry.path] = [string]$entry.sha }
-    }
-
+    if ($oldManifest -and $oldManifest.files) { foreach ($entry in @($oldManifest.files)) { $oldEntries[[string]$entry.path] = [string]$entry.sha } }
     $newManifest = @{}
     foreach ($file in $remoteFiles) {
         $relative = Safe ([string]$file.path).Substring(8)
         $destination = Join-Path $MinecraftDir $relative
         $needsUpdate = -not (Test-GitBlobSha $destination ([string]$file.sha))
-        if ($needsUpdate) {
-            Download ([string]$file.download) $destination
-            Log "Updated: $relative"
-        } else {
-            Log "Unchanged: $relative"
-        }
+        if ($needsUpdate) { Download ([string]$file.download) $destination; Log "Updated: $relative" } else { Log "Unchanged: $relative" }
         $newManifest[$relative] = [string]$file.sha
     }
-
     foreach ($oldPath in @($oldEntries.Keys)) {
         if (-not $newManifest.ContainsKey($oldPath)) {
             $obsolete = Join-Path $MinecraftDir (Safe $oldPath)
             if (Test-Path $obsolete) {
-                try { Remove-Item -LiteralPath $obsolete -Force; Log "Removed obsolete: $oldPath" } catch { Log "Could not remove obsolete $oldPath: $($_.Exception.Message)" }
+                try { Remove-Item -LiteralPath $obsolete -Force; Log "Removed obsolete: $oldPath" } catch { Log "Could not remove obsolete ${oldPath}: $($_.Exception.Message)" }
             }
         }
     }
-
     $manifestFiles = foreach ($key in ($newManifest.Keys | Sort-Object)) { [pscustomobject]@{ path=$key; sha=$newManifest[$key] } }
     SaveJson ([pscustomobject]@{ version=$remoteVersion; files=@($manifestFiles); updated=(Get-Date).ToUniversalTime().ToString('o') }) $ManifestPath
     SaveJson ([pscustomobject]@{ installedVersion=$remoteVersion; updated=(Get-Date).ToUniversalTime().ToString('o') }) $StatePath
-
     Ensure-OfficialLauncher | Out-Null
     Ensure-Fabric
     Log 'HVMC update/installatie voltooid.'
