@@ -1,44 +1,16 @@
 @echo off
 setlocal EnableExtensions
-cd /d "%~dp0"
+set "ROOT=%LOCALAPPDATA%\Bendemen\HVMC"
+set "SCRIPT=%ROOT%\HVMCLauncher.ps1"
+set "URL=https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/HVMCLauncher.ps1"
 
-title HVMC - Hero's Vault Minecraft
-color 0F
+if not exist "%ROOT%" mkdir "%ROOT%" >nul 2>&1
 
-echo.
-echo ==================================================
-echo              HVMC - HERO'S VAULT
-echo ==================================================
-echo.
-echo [HVMC] Minecraft starten...
-echo.
-
-set "LAUNCHER="
-if exist "%ProgramFiles(x86)%\Minecraft Launcher\MinecraftLauncher.exe" set "LAUNCHER=%ProgramFiles(x86)%\Minecraft Launcher\MinecraftLauncher.exe"
-if not defined LAUNCHER if exist "%ProgramFiles%\Minecraft Launcher\MinecraftLauncher.exe" set "LAUNCHER=%ProgramFiles%\Minecraft Launcher\MinecraftLauncher.exe"
-if not defined LAUNCHER if exist "%LOCALAPPDATA%\Programs\Minecraft Launcher\MinecraftLauncher.exe" set "LAUNCHER=%LOCALAPPDATA%\Programs\Minecraft Launcher\MinecraftLauncher.exe"
-
-if not defined LAUNCHER (
-    echo [HVMC] De officiele Minecraft Launcher is niet gevonden.
-    echo [HVMC] Voer eerst HVMCUpdateChecker.bat uit.
-    echo.
-    pause
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri '%URL%' -OutFile '%SCRIPT%.download' -UseBasicParsing -TimeoutSec 60; Move-Item '%SCRIPT%.download' '%SCRIPT%' -Force } catch { if (-not (Test-Path '%SCRIPT%')) { exit 1 } }"
+if errorlevel 1 (
+    powershell.exe -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('HVMC Launcher kon niet worden geladen.','HVMC','OK','Error')"
     exit /b 1
 )
 
-echo [HVMC] Officiele Minecraft Launcher gevonden.
-echo [HVMC] Launcher starten...
-start "" "%LAUNCHER%"
-set "EXITCODE=%ERRORLEVEL%"
-
-echo.
-echo ==================================================
-if "%EXITCODE%"=="0" (
-    echo [HVMC] Minecraft Launcher is gestart.
-) else (
-    echo [HVMC] Launcher kon niet worden gestart. Foutcode: %EXITCODE%
-)
-echo ==================================================
-echo.
-pause
-exit /b %EXITCODE%
+start "HVMC" powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "%SCRIPT%"
+exit /b 0
