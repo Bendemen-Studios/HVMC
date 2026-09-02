@@ -2,7 +2,27 @@
 setlocal
 cd /d "%~dp0"
 
-rem Hero's Vault MC Bootstrapper
-rem No console/UI from the updater itself.
-start "" /min powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0HVBootstrapper.ps1"
-exit /b 0
+title HVMC Bootstrapper
+
+echo.
+echo ==========================================
+echo          HVMC Bootstrapper
+ echo ==========================================
+echo.
+echo Start.bat blijft open zodat je de voortgang kunt zien.
+echo.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0HVBootstrapper.ps1"
+set "EXITCODE=%ERRORLEVEL%"
+
+echo.
+echo ==========================================
+if "%EXITCODE%"=="0" (
+    echo HVMC bootstrapper is klaar.
+) else (
+    echo HVMC bootstrapper is gestopt met foutcode %EXITCODE%.
+)
+echo ==========================================
+echo.
+pause
+exit /b %EXITCODE%
