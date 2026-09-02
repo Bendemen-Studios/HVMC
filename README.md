@@ -2,11 +2,26 @@
 
 HVMC is the custom Windows launcher for Hero's Vault MC, designed for school and care-organisation PCs.
 
-## Launcher
+## Windows app
 
-The launcher is a single Windows executable: `HVMCLauncher.exe`.
+The user-facing HVMC launcher is a normal per-user Windows app. The first time `HVMCLauncher.exe` is opened, it installs itself into:
 
-It provides a deliberately simple interface:
+```text
+%LOCALAPPDATA%\Bendemen\HVMC\App\HVMCLauncher.exe
+```
+
+It then creates:
+
+- a **HVMC** entry in the Windows Start Menu;
+- a **HVMC** shortcut on the desktop.
+
+After the first launch, users open HVMC from the Start Menu or desktop like a normal app. They do not need to keep opening a downloaded `.exe` file manually.
+
+HVMC does not require administrator rights for this per-user installation.
+
+## Launcher interface
+
+The launcher provides a deliberately simple interface:
 
 - **SPELEN**
 - **AFSLUITEN**
@@ -84,11 +99,19 @@ content/
 
 The updater also keeps a local manifest and state file under `%LOCALAPPDATA%\Bendemen\HVMC`.
 
+The launcher downloads the current updater script before running it. The updater is executed without opening a visible command prompt.
+
+## Launcher updates
+
+HVMC checks the latest stable GitHub release at startup. When a newer `HVMCLauncher.exe` is available, the installed launcher downloads the new binary and replaces itself after exiting.
+
+Because the real application lives in the stable per-user application directory, updates also update the executable used by the Start Menu and desktop shortcuts.
+
 ## Offline behaviour
 
-The launcher itself does not require the official Minecraft Launcher UI for its startup flow. Managed Minecraft content is already kept locally, so an existing installation can continue to use its local files when the content endpoint is temporarily unavailable.
+Managed Minecraft content is already kept locally, so an existing installation can continue to use its local files when the content endpoint is temporarily unavailable.
 
-Account leasing and PC authorisation do require `accounts.hvmc.nl`; when the account service is unavailable, HVMC will not claim a new account lease.
+Account leasing and PC authorisation require `accounts.hvmc.nl`; when the account service is unavailable, HVMC will not claim a new account lease.
 
 ## Releases and versioning
 
@@ -100,8 +123,6 @@ HVMC uses simple user-facing release versions:
 - maintenance releases can continue as **v2.1**, **v2.2**, etc.
 
 `version.txt` remains the content version source of truth. GitHub releases are created only from version tags such as `v1.0`, `v1.1`, or `v2.0`; normal commits do not create public releases.
-
-The launcher checks the latest stable GitHub release and can replace itself automatically when a newer `HVMCLauncher.exe` is available.
 
 ## Security
 
