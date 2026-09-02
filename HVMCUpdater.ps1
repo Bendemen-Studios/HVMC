@@ -65,22 +65,6 @@ function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
         return $hex -ieq $ExpectedSha
     } catch { return $false }
 }
-function Ensure-OfficialLauncher {
-    $paths = @(
-        (Join-Path ${env:ProgramFiles(x86)} 'Minecraft Launcher\MinecraftLauncher.exe'),
-        (Join-Path $env:ProgramFiles 'Minecraft Launcher\MinecraftLauncher.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Minecraft Launcher\MinecraftLauncher.exe')
-    )
-    foreach ($p in $paths) { if ($p -and (Test-Path $p)) { Log 'Official Minecraft Launcher gevonden.'; return $p } }
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget) {
-        Log 'Official Minecraft Launcher ontbreekt; installeren via winget...'
-        try { & $winget.Source install --id Mojang.MinecraftLauncher --exact --silent --accept-package-agreements --accept-source-agreements | Out-Null } catch { Log "WinGet fout: $($_.Exception.Message)" }
-        foreach ($p in $paths) { if ($p -and (Test-Path $p)) { Log 'Official Minecraft Launcher geïnstalleerd.'; return $p } }
-    }
-    Start-Process 'https://www.minecraft.net/download'
-    throw 'Official Minecraft Launcher kon niet automatisch worden geïnstalleerd.'
-}
 function Ensure-Fabric {
     $target = Join-Path $MinecraftDir "versions\fabric-loader-$FabricLoader-$McVersion\fabric-loader-$FabricLoader-$McVersion.json"
     if (Test-Path $target) { Log "Fabric $FabricLoader voor Minecraft $McVersion gevonden."; return }
@@ -122,7 +106,6 @@ try {
     $manifestFiles = foreach ($key in ($newManifest.Keys | Sort-Object)) { [pscustomobject]@{ path=$key; sha=$newManifest[$key] } }
     SaveJson ([pscustomobject]@{ version=$remoteVersion; files=@($manifestFiles); updated=(Get-Date).ToUniversalTime().ToString('o') }) $ManifestPath
     SaveJson ([pscustomobject]@{ installedVersion=$remoteVersion; updated=(Get-Date).ToUniversalTime().ToString('o') }) $StatePath
-    Ensure-OfficialLauncher | Out-Null
     Ensure-Fabric
     Log 'HVMC update/installatie voltooid.'
     exit 0
