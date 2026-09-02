@@ -1,0 +1,180 @@
+import crypto from 'node:crypto';
+
+const PC_ONLINE_MS = 90_000;
+const PC_CODE_TTL_MS = 15 * 60_000;
+const PC_CODE_RE = /^[A-Z0-9]{10}$/;
+const DEVICE_TOKEN_HEADER = 'x-hvmc-device-token';
+
+export function registerPcManagement(app, db, requireAdmin) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS organizations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS pcs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      device_token_hash TEXT NOT NULL,
+      blocked INTEGER NOT NULL DEFAULT 0,
+      deleted INTEGER NOT NULL DEFAULT 0,
+      organization_id INTEGER REFERENCES organizations(id) ON DELETE SET NULL,
+      last_seen_at TEXT,
+      last_ip TEXT,
+      os_version TEXT,
+      launcher_version TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pcs_org ON pcs(organization_id);
+    CREATE TABLE IF NOT EXISTS pc_auth_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+
+  const hash = value => crypto.createHash('sha256').update(String(value)).digest('hex');
+  const now = () => new Date().toISOString();
+  const cleanupCodes = () => db.prepare('DELETE FROM pc_auth_codes WHERE expires_at <= ? OR used_at IS NOT NULL').run(now());
+
+  function device(req, res) {
+    const clientId = String(req.body?.clientId || req.headers['x-hvmc-client-id'] || '').trim().slice(0, 200);
+    const token = String(req.headers[DEVICE_TOKEN_HEADER] || '').trim();
+    if (!clientId || !token) {
+      res.status(401).json({ error: 'Deze pc is nog niet geautoriseerd.', codeRequired: true });
+      return null;
+    }
+    const pc = db.prepare('SELECT * FROM pcs WHERE client_id=? AND deleted=0').get(clientId);
+    if (!pc) {
+      res.status(403).json({ error: 'Deze pc is nog niet geautoriseerd.', codeRequired: true });
+      return null;
+    }
+    if (!crypto.timingSafeEqual(Buffer.from(hash(token)), Buffer.from(pc.device_token_hash))) {
+      res.status(403).json({ error: 'Ongeldige pc-autorisatie.', codeRequired: true });
+      return null;
+    }
+    if (pc.blocked) {
+      res.status(403).json({ error: 'Deze pc is door een beheerder geblokkeerd.', blocked: true });
+      return null;
+    }
+    db.prepare('UPDATE pcs SET last_seen_at=?,last_ip=? WHERE id=?').run(now(), String(req.ip || req.socket.remoteAddress || ''), pc.id);
+    return pc;
+  }
+
+  app.post('/v1/admin/pc-codes', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    cleanupCodes();
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code;
+    do { code = Array.from({ length: 10 }, () => alphabet[crypto.randomInt(alphabet.length)]).join(''); }
+    while (db.prepare('SELECT 1 FROM pc_auth_codes WHERE code_hash=?').get(hash(code)));
+    const expiresAt = new Date(Date.now() + PC_CODE_TTL_MS).toISOString();
+    db.prepare('INSERT INTO pc_auth_codes(code_hash,expires_at,created_at) VALUES(?,?,?)').run(hash(code), expiresAt, now());
+    res.json({ ok: true, code, expiresAt });
+  });
+
+  app.post('/v1/launcher/pc/register', (req, res) => {
+    cleanupCodes();
+    const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
+    const code = String(req.body?.code || '').trim().toUpperCase();
+    const name = String(req.body?.name || 'HVMC-PC').trim().slice(0, 120) || 'HVMC-PC';
+    if (!clientId || !PC_CODE_RE.test(code)) return res.status(400).json({ error: 'Ongeldige autorisatiecode.' });
+    const existing = db.prepare('SELECT * FROM pcs WHERE client_id=?').get(clientId);
+    if (existing && existing.deleted === 0) return res.status(409).json({ error: existing.blocked ? 'Deze pc is geblokkeerd.' : 'Deze pc is al geautoriseerd.' });
+    const auth = db.prepare('SELECT * FROM pc_auth_codes WHERE code_hash=? AND used_at IS NULL AND expires_at>?').get(hash(code), now());
+    if (!auth) return res.status(401).json({ error: 'Autorisatiecode is ongeldig of verlopen.' });
+    const token = crypto.randomBytes(32).toString('base64url');
+    const stamp = now();
+    const id = db.transaction(() => {
+      db.prepare('UPDATE pc_auth_codes SET used_at=? WHERE id=?').run(stamp, auth.id);
+      if (existing) {
+        db.prepare('UPDATE pcs SET name=?,device_token_hash=?,blocked=0,deleted=0,last_seen_at=?,last_ip=NULL,created_at=? WHERE id=?').run(name, hash(token), stamp, stamp, existing.id);
+        return existing.id;
+      }
+      const info = db.prepare('INSERT INTO pcs(client_id,name,device_token_hash,created_at,last_seen_at) VALUES(?,?,?,?,?)').run(clientId, name, hash(token), stamp, stamp);
+      return Number(info.lastInsertRowid);
+    })();
+    res.json({ ok: true, pcId: id, clientId, name, deviceToken: token });
+  });
+
+  app.post('/v1/launcher/pc/heartbeat', (req, res) => {
+    const pc = device(req, res);
+    if (!pc) return;
+    const osVersion = String(req.body?.osVersion || '').slice(0, 120);
+    const launcherVersion = String(req.body?.launcherVersion || '').slice(0, 80);
+    db.prepare('UPDATE pcs SET os_version=?,launcher_version=?,last_seen_at=?,last_ip=? WHERE id=?')
+      .run(osVersion || null, launcherVersion || null, now(), String(req.ip || req.socket.remoteAddress || ''), pc.id);
+    res.json({ ok: true, online: true });
+  });
+
+  app.get('/v1/launcher/pc/status', (req, res) => {
+    const clientId = String(req.query?.clientId || '').trim();
+    const pc = db.prepare('SELECT id,client_id,name,blocked,deleted,last_seen_at FROM pcs WHERE client_id=?').get(clientId);
+    if (!pc || pc.deleted) return res.status(404).json({ error: 'Deze pc is nog niet geautoriseerd.', codeRequired: true });
+    if (pc.blocked) return res.status(403).json({ error: 'Deze pc is door een beheerder geblokkeerd.', blocked: true });
+    res.json({ ok: true, authorized: true, online: pc.last_seen_at ? Date.now() - Date.parse(pc.last_seen_at) < PC_ONLINE_MS : false, name: pc.name });
+  });
+
+  app.get('/v1/admin/organizations', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    res.json({ organizations: db.prepare('SELECT id,name,created_at FROM organizations ORDER BY name').all() });
+  });
+  app.post('/v1/admin/organizations', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const name = String(req.body?.name || '').trim().slice(0, 120);
+    if (!name) return res.status(400).json({ error: 'Naam is verplicht.' });
+    try {
+      const info = db.prepare('INSERT INTO organizations(name,created_at) VALUES(?,?)').run(name, now());
+      res.json({ ok: true, id: Number(info.lastInsertRowid), name });
+    } catch { res.status(409).json({ error: 'Organisatie bestaat al.' }); }
+  });
+  app.delete('/v1/admin/organizations/:id', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    db.prepare('DELETE FROM organizations WHERE id=?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+  app.get('/v1/admin/pcs', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const rows = db.prepare(`SELECT pcs.id,pcs.client_id,pcs.name,pcs.blocked,pcs.deleted,pcs.organization_id,
+      organizations.name AS organization_name,pcs.last_seen_at,pcs.last_ip,pcs.os_version,pcs.launcher_version,
+      leases.id AS lease_id,leases.expires_at,accounts.slot AS account_slot,accounts.label AS account_label,accounts.microsoft_username
+      FROM pcs LEFT JOIN organizations ON organizations.id=pcs.organization_id
+      LEFT JOIN leases ON leases.client_id=pcs.client_id
+      LEFT JOIN accounts ON accounts.id=leases.account_id
+      WHERE pcs.deleted=0 ORDER BY COALESCE(organizations.name,''),pcs.name`).all();
+    const timestamp = Date.now();
+    res.json({ pcs: rows.map(r => ({ ...r, online: r.last_seen_at ? timestamp - Date.parse(r.last_seen_at) < PC_ONLINE_MS : false })) });
+  });
+  app.patch('/v1/admin/pcs/:id', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const id = Number(req.params.id);
+    const pc = db.prepare('SELECT * FROM pcs WHERE id=? AND deleted=0').get(id);
+    if (!pc) return res.status(404).json({ error: 'PC niet gevonden.' });
+    const name = req.body?.name !== undefined ? String(req.body.name).trim().slice(0, 120) : pc.name;
+    const blocked = req.body?.blocked !== undefined ? (req.body.blocked ? 1 : 0) : pc.blocked;
+    const organizationId = req.body?.organizationId === null || req.body?.organizationId === '' ? null : (req.body?.organizationId !== undefined ? Number(req.body.organizationId) : pc.organization_id);
+    if (organizationId !== null && !db.prepare('SELECT 1 FROM organizations WHERE id=?').get(organizationId)) return res.status(400).json({ error: 'Organisatie bestaat niet.' });
+    db.prepare('UPDATE pcs SET name=?,blocked=?,organization_id=? WHERE id=?').run(name, blocked, organizationId, id);
+    if (blocked) db.prepare('DELETE FROM leases WHERE client_id=?').run(pc.client_id);
+    res.json({ ok: true });
+  });
+  app.delete('/v1/admin/pcs/:id', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const id = Number(req.params.id);
+    const pc = db.prepare('SELECT client_id FROM pcs WHERE id=?').get(id);
+    if (!pc) return res.status(404).json({ error: 'PC niet gevonden.' });
+    db.prepare('DELETE FROM leases WHERE client_id=?').run(pc.client_id);
+    db.prepare('UPDATE pcs SET deleted=1,blocked=1,device_token_hash=? WHERE id=?').run(hash(crypto.randomBytes(32).toString('base64url')), id);
+    res.json({ ok: true });
+  });
+
+  app.use('/v1/launcher/lease', (req, res, next) => {
+    const pc = device(req, res);
+    if (!pc) return;
+    req.hvmcPc = pc;
+    next();
+  });
+}
