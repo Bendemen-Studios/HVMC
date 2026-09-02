@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
+using Forms = System.Windows.Forms;
 
 namespace HVMCLauncher;
 
@@ -38,14 +39,14 @@ public partial class MainWindow : Window
             SetStatus("Vrij Minecraft-account zoeken...");
             var lease = await AcquireLeaseAsync(_clientId);
             _leaseId = lease.LeaseId;
-
             SetStatus($"{lease.AccountName} geselecteerd.");
+
             var minecraftPath = new MinecraftPath(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
             var minecraftLauncher = new MinecraftLauncher(minecraftPath);
 
-            // The VPS performs Microsoft/Xbox/XSTS authentication and returns only
-            // a short-lived Minecraft Java session. No Microsoft login is required on the youth PC.
+            // The VPS performs Microsoft/Xbox/XSTS authentication and returns only a
+            // short-lived Minecraft Java session. No Microsoft login is required on the youth PC.
             var session = new MSession(lease.Username, lease.MinecraftAccessToken, lease.Uuid)
             {
                 Xuid = lease.Xuid ?? string.Empty
@@ -54,13 +55,20 @@ public partial class MainWindow : Window
             SetStatus("Minecraft controleren...");
             await minecraftLauncher.InstallAsync(MinecraftVersion);
 
+            var display = Forms.Screen.PrimaryScreen?.Bounds;
+            var width = display?.Width ?? 1920;
+            var height = display?.Height ?? 1080;
             var fabricProfile = $"fabric-loader-{FabricVersion}-{MinecraftVersion}";
-            SetStatus("Minecraft starten...");
+
+            SetStatus($"Minecraft starten op {width}x{height}...");
             var process = await minecraftLauncher.InstallAndBuildProcessAsync(fabricProfile, new MLaunchOption
             {
                 Session = session,
                 MaximumRamMb = MaximumRamMb,
-                GameLauncherName = "HVMC"
+                GameLauncherName = "HVMC",
+                FullScreen = true,
+                ScreenWidth = width,
+                ScreenHeight = height
             });
 
             process.Start();
