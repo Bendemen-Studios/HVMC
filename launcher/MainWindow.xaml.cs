@@ -1,5 +1,6 @@
 using CmlLib.Core;
 using System.Diagnostics;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
@@ -44,9 +45,6 @@ public partial class MainWindow : Window
             var minecraftPath = new MinecraftPath(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
             var minecraftLauncher = new MinecraftLauncher(minecraftPath);
-
-            // The VPS performs Microsoft/Xbox/XSTS authentication and returns only a
-            // short-lived Minecraft Java session. No Microsoft login is required on the youth PC.
             var session = new MSession(lease.Username, lease.MinecraftAccessToken, lease.Uuid)
             {
                 Xuid = lease.Xuid ?? string.Empty
@@ -55,6 +53,8 @@ public partial class MainWindow : Window
             SetStatus("Minecraft controleren...");
             await minecraftLauncher.InstallAsync(MinecraftVersion);
 
+            // Use the actual Windows primary-display pixel size. This supports 16:9,
+            // 16:10, 21:9 and other normal/ultrawide displays without a launcher setting.
             var display = Forms.Screen.PrimaryScreen?.Bounds;
             var width = display?.Width ?? 1920;
             var height = display?.Height ?? 1080;
