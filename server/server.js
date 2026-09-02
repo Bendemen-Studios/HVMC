@@ -60,7 +60,6 @@ CREATE TABLE IF NOT EXISTS pool_meta (
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
 
-// Initialize default accounts only once. After initialization, the admin owns the pool size.
 const initialized = db.prepare("SELECT value FROM pool_meta WHERE key = 'initialized'").get();
 if (!initialized) {
   const existingCount = Number(db.prepare('SELECT COUNT(*) AS count FROM accounts').get().count);
@@ -80,11 +79,17 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 10;
 
+function cleanupExpired() {
+  const now = new Date().toISOString();
+  db.prepare('DELETE FROM leases WHERE expires_at <= ?').run(now);
+}
+
 function cleanupState() {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
   for (const [ip, info] of loginAttempts) if (info.resetAt <= now) loginAttempts.delete(ip);
   for (const [id, attempt] of linkAttempts) if (attempt.expiresAt <= now) linkAttempts.delete(id);
+  cleanupExpired();
 }
 setInterval(cleanupState, 60_000).unref();
 
@@ -240,7 +245,7 @@ app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
   if (!account) return res.status(404).json({ error: 'Account niet gevonden.' });
   if (db.prepare('SELECT 1 FROM leases WHERE account_id = ?').get(id)) return res.status(409).json({ error: 'Geef het account eerst vrij.' });
-  if ([...linkAttempts.values()].some(x => x.accountId === id)) return res.status(409).json({ error: 'Voor dit account loopt al een Microsoft-koppeling.' });
+  for (const [attemptId, attempt] of linkAttempts) if (attempt.accountId === id) linkAttempts.delete(attemptId);
   try {
     const device = await microsoftDeviceStart();
     const attemptId = crypto.randomUUID();
@@ -251,14 +256,7 @@ app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
       nextPollAt: Date.now(),
       expiresAt: Date.now() + Number(device.expires_in || 900) * 1000
     });
-    res.json({
-      ok: true,
-      attemptId,
-      verificationUri: device.verification_uri || device.verification_url || 'https://microsoft.com/devicelogin',
-      userCode: device.user_code,
-      message: device.message || 'Open Microsoft login and enter the code.',
-      expiresIn: Number(device.expires_in || 900)
-    });
+    res.json({ ok: true, attemptId, verificationUri: device.verification_uri || device.verification_url || 'https://microsoft.com/devicelogin', userCode: device.user_code, message: device.message || 'Open Microsoft login and enter the code.', expiresIn: Number(device.expires_in || 900) });
   } catch (err) {
     res.status(502).json({ error: err.message || 'Microsoft-login kon niet worden gestart.' });
   }
@@ -304,7 +302,6 @@ app.post('/v1/admin/accounts/:id/link/poll', async (req, res) => {
 
 app.get('/v1/status', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  cleanupExpired();
   const rows = db.prepare(`SELECT accounts.id,accounts.slot,accounts.label,accounts.enabled,accounts.microsoft_oid,accounts.microsoft_username,
     CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at
     FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
@@ -354,6 +351,51 @@ app.post('/v1/admin/accounts/:id/unlink', (req, res) => {
   const info = db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL WHERE id = ?').run(id);
   if (!info.changes) return res.status(404).json({ error: 'Account niet gevonden.' });
   res.json({ ok: true });
+});
+
+// Public launcher pool API. It only returns a slot/lease; Microsoft credentials never leave the server here.
+app.post('/v1/launcher/lease/acquire', (req, res) => {
+  cleanupExpired();
+  const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
+  if (!clientId) return res.status(400).json({ error: 'clientId is required' });
+  const tx = db.transaction(() => {
+    const existing = db.prepare('SELECT leases.*,accounts.slot,accounts.label,accounts.microsoft_username FROM leases JOIN accounts ON accounts.id=leases.account_id WHERE leases.client_id=? ORDER BY leases.acquired_at DESC LIMIT 1').get(clientId);
+    if (existing) return existing;
+    const account = db.prepare(`SELECT accounts.* FROM accounts
+      WHERE accounts.enabled = 1 AND accounts.microsoft_oid IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM leases WHERE leases.account_id = accounts.id)
+      ORDER BY accounts.id LIMIT 1`).get();
+    if (!account) return null;
+    const now = new Date();
+    const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
+    const leaseId = crypto.randomUUID();
+    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)')
+      .run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
+    return { id: leaseId, slot: account.slot, label: account.label, microsoftUsername: account.microsoft_username || '', expiresAt: expires.toISOString() };
+  });
+  const lease = tx();
+  if (!lease) return res.status(409).json({ error: 'Geen vrij gekoppeld Minecraft-account beschikbaar.' });
+  res.json({ ok: true, leaseId: lease.id, slot: lease.slot, accountName: lease.label, microsoftUsername: lease.microsoftUsername, expiresAt: lease.expiresAt });
+});
+
+app.post('/v1/launcher/lease/heartbeat', (req, res) => {
+  cleanupExpired();
+  const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
+  const leaseId = String(req.body?.leaseId || '').trim();
+  if (!clientId || !leaseId) return res.status(400).json({ error: 'clientId and leaseId are required' });
+  const lease = db.prepare('SELECT * FROM leases WHERE id=? AND client_id=?').get(leaseId, clientId);
+  if (!lease) return res.status(404).json({ error: 'Lease niet gevonden.' });
+  const expires = new Date(Date.now() + DEFAULT_LEASE_SECONDS * 1000).toISOString();
+  db.prepare('UPDATE leases SET heartbeat_at=?,expires_at=? WHERE id=?').run(new Date().toISOString(), expires, leaseId);
+  res.json({ ok: true, expiresAt: expires });
+});
+
+app.post('/v1/launcher/lease/release', (req, res) => {
+  const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
+  const leaseId = String(req.body?.leaseId || '').trim();
+  if (!clientId || !leaseId) return res.status(400).json({ error: 'clientId and leaseId are required' });
+  const info = db.prepare('DELETE FROM leases WHERE id=? AND client_id=?').run(leaseId, clientId);
+  res.json({ ok: true, released: info.changes > 0 });
 });
 
 app.post('/v1/lease/acquire', async (req, res) => {
