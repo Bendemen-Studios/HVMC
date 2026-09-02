@@ -1,5 +1,5 @@
 {
-  "clientId": "PASTE-YOUR-MICROSOFT-APP-CLIENT-ID-HERE",
+  "clientId": "7fcdeaa7-ba20-4883-96b0-0b68cff24bb9",
   "authority": "https://login.microsoftonline.com/common",
   "scopes": [
     "openid",
