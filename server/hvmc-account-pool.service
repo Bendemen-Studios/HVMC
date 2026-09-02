@@ -1,0 +1,16 @@
+[Unit]
+Description=HVMC Account Pool API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hvmc-account-pool
+EnvironmentFile=/opt/hvmc-account-pool/.env
+ExecStart=/usr/bin/node /opt/hvmc-account-pool/server.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
