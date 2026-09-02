@@ -1,6 +1,7 @@
 using CmlLib.Core;
+using CmlLib.Core.Auth;
 using CmlLib.Core.Auth.Microsoft;
-using CmlLib.Core.ProcessBuilder;
+using CmlLib.Core.Auth.Microsoft.Sessions;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.IO;
@@ -20,7 +21,6 @@ public partial class MainWindow : Window
     private const int MaximumRamMb = 4096;
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
-    private readonly string _mappingPath;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private string? _leaseId;
     private string? _clientId;
@@ -28,7 +28,6 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _mappingPath = Path.Combine(_root, "pool-accounts.json");
         Directory.CreateDirectory(_root);
     }
 
@@ -41,24 +40,28 @@ public partial class MainWindow : Window
             SetStatus("Updates controleren...");
             await RunUpdaterAsync();
 
-            SetStatus("Vrij Minecraft-account zoeken...");
             _clientId = GetStableClientId();
+            SetStatus("Vrij Minecraft-account zoeken...");
             var lease = await AcquireLeaseAsync(_clientId);
             _leaseId = lease.LeaseId;
 
-            SetStatus($"Account {lease.AccountName} reserveren...");
-            var identifier = FindLocalAccountIdentifier(lease.Slot, lease.MicrosoftUsername);
-            if (identifier is null)
-                throw new InvalidOperationException($"Pool-account '{lease.AccountName}' is op deze pc nog niet gekoppeld aan een lokale Microsoft-login. Laat een beheerder deze poolaccount eenmalig op deze pc aanmelden.");
+            SetStatus($"{lease.AccountName} wordt klaargemaakt...");
+            var handler = BuildLoginHandler();
+            var account = FindLocalAccount(handler, lease.MicrosoftUsername);
+            if (account is null)
+            {
+                throw new InvalidOperationException(
+                    $"Het pool-account '{lease.AccountName}' is nog niet lokaal aangemeld op deze pc. " +
+                    "Laat een beheerder dit Microsoft-account één keer aanmelden op deze pc.");
+            }
 
             SetStatus("Microsoft-sessie voorbereiden...");
-            var session = await AuthenticateSilentlyAsync(identifier);
+            var session = await AuthenticateSilentlyAsync(handler, account);
 
-            SetStatus("Minecraft voorbereiden...");
-            var minecraftPath = new MinecraftPath(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) is { Length: > 0 } app
-                ? Path.Combine(app, ".minecraft")
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Roaming", ".minecraft"));
+            var minecraftPath = new MinecraftPath(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
             var launcher = new MinecraftLauncher(minecraftPath);
+            SetStatus("Minecraft voorbereiden...");
             await launcher.InstallAsync(MinecraftVersion);
 
             var fabricProfile = $"fabric-loader-{FabricVersion}-{MinecraftVersion}";
@@ -71,12 +74,12 @@ public partial class MainWindow : Window
 
             process.Start();
             SetStatus("Minecraft draait.");
-            StartLeaseHeartbeat(_clientId, _leaseId);
+            _ = StartLeaseHeartbeatAsync(_clientId, _leaseId);
             await process.WaitForExitAsync();
         }
         catch (Exception ex)
         {
-            SetStatus("Er is een fout opgetreden.");
+            SetStatus("Starten mislukt.");
             MessageBox.Show(this, ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
@@ -97,21 +100,16 @@ public partial class MainWindow : Window
         response.EnsureSuccessStatusCode();
         await File.WriteAllBytesAsync(updater, await response.Content.ReadAsByteArrayAsync());
 
-        var psi = new ProcessStartInfo
+        using var p = Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        psi.ArgumentList.Add("-NoProfile");
-        psi.ArgumentList.Add("-ExecutionPolicy");
-        psi.ArgumentList.Add("Bypass");
-        psi.ArgumentList.Add("-File");
-        psi.ArgumentList.Add(updater);
+            RedirectStandardError = true,
+            ArgumentList = { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater }
+        }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
 
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
         var stdout = await p.StandardOutput.ReadToEndAsync();
         var stderr = await p.StandardError.ReadToEndAsync();
         await p.WaitForExitAsync();
@@ -126,26 +124,35 @@ public partial class MainWindow : Window
         var json = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(GetError(json));
-        return JsonSerializer.Deserialize<LeaseResponse>(json, JsonOptions) ?? throw new InvalidOperationException("Ongeldige lease-response.");
+        return JsonSerializer.Deserialize<LeaseResponse>(json, JsonOptions)
+            ?? throw new InvalidOperationException("Ongeldige lease-response.");
     }
 
-    private async Task<JELoginHandler> BuildLoginHandlerAsync()
+    private JELoginHandler BuildLoginHandler()
     {
         var loggerFactory = LoggerFactory.Create(config => config.ClearProviders());
-        var logger = loggerFactory.CreateLogger("HVMC");
-        return new JELoginHandlerBuilder().WithLogger(logger).Build();
+        return new JELoginHandlerBuilder()
+            .WithLogger(loggerFactory.CreateLogger("HVMC"))
+            .Build();
     }
 
-    private async Task<CmlLib.Core.Auth.MSession> AuthenticateSilentlyAsync(string identifier)
+    private static JEGameAccount? FindLocalAccount(JELoginHandler handler, string? username)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return null;
+        var wanted = username.Trim();
+        foreach (var item in handler.AccountManager.GetAccounts())
+        {
+            if (item is JEGameAccount je &&
+                string.Equals(je.Profile?.Username, wanted, StringComparison.OrdinalIgnoreCase))
+                return je;
+        }
+        return null;
+    }
+
+    private static async Task<MSession> AuthenticateSilentlyAsync(JELoginHandler handler, JEGameAccount account)
     {
         var loggerFactory = LoggerFactory.Create(config => config.ClearProviders());
-        var logger = loggerFactory.CreateLogger("HVMC");
         var msal = await MsalClientHelper.BuildApplicationWithCache(MicrosoftClientId);
-        var handler = new JELoginHandlerBuilder().WithLogger(logger).Build();
-        var account = handler.AccountManager.GetAccounts().FirstOrDefault(a => string.Equals(a.Identifier, identifier, StringComparison.Ordinal));
-        if (account is null)
-            throw new InvalidOperationException("De lokale HVMC-accountcache bevat dit pool-account niet.");
-
         var authenticator = handler.CreateAuthenticator(account, default);
         authenticator.AddMsalOAuth(msal, oauth => oauth.Silent());
         authenticator.AddXboxAuthForJE(xbox => xbox.Basic());
@@ -153,36 +160,20 @@ public partial class MainWindow : Window
         return await authenticator.ExecuteForLauncherAsync();
     }
 
-    private string? FindLocalAccountIdentifier(string slot, string? username)
-    {
-        if (File.Exists(_mappingPath))
-        {
-            try
-            {
-                var map = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_mappingPath));
-                if (map is not null && map.TryGetValue(slot, out var id) && !string.IsNullOrWhiteSpace(id))
-                    return id;
-            }
-            catch { }
-        }
-
-        return null;
-    }
-
     private string GetStableClientId()
     {
-        var idPath = Path.Combine(_root, "client-id.txt");
-        if (File.Exists(idPath))
+        var path = Path.Combine(_root, "client-id.txt");
+        if (File.Exists(path))
         {
-            var existing = File.ReadAllText(idPath).Trim();
+            var existing = File.ReadAllText(path).Trim();
             if (Guid.TryParse(existing, out _)) return existing;
         }
         var created = Guid.NewGuid().ToString();
-        File.WriteAllText(idPath, created);
+        File.WriteAllText(path, created);
         return created;
     }
 
-    private async void StartLeaseHeartbeat(string clientId, string leaseId)
+    private async Task StartLeaseHeartbeatAsync(string clientId, string leaseId)
     {
         try
         {
