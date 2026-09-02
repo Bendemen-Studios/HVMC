@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HVMC Account Dashboard</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;color:#e8eef7;background:#0b1017}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#162131,#0b1017 55%)}
+main{max-width:1050px;margin:0 auto;padding:42px 22px}.top{display:flex;justify-content:space-between;gap:20px;align-items:flex-end;margin-bottom:28px}
+h1{margin:0;font-size:32px}.sub{color:#94a3b8;margin-top:7px}.panel{background:rgba(15,23,34,.9);border:1px solid #223047;border-radius:18px;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.auth{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:18px}.auth input{min-width:0;background:#0b111a;color:#e8eef7;border:1px solid #2a3950;border-radius:10px;padding:11px 12px}
+button{border:0;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer;background:#4f8cff;color:white}button.secondary{background:#273449}button.danger{background:#9f3346}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:18px}.card{border:1px solid #29384e;border-radius:14px;padding:17px;background:#101925}.row{display:flex;justify-content:space-between;gap:10px}.slot{font-weight:800}.pill{border-radius:999px;padding:5px 9px;font-size:12px;font-weight:800}.free{background:#123522;color:#7fe0a1}.busy{background:#4b2028;color:#ff9eae}.disabled{background:#3a3420;color:#f3cd71}
+.meta{color:#93a4ba;font-size:13px;margin-top:10px;min-height:38px}.empty{color:#90a0b2;padding:30px;text-align:center}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.status{margin-left:auto;color:#94a3b8;font-size:13px}
+@media(max-width:650px){.top{align-items:flex-start;flex-direction:column}.auth{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>HVMC Account Dashboard</h1><div class="sub">Centrale status van de Minecraft-accountpool</div></div>
+    <div class="toolbar"><button id="refresh" class="secondary">Vernieuwen</button></div>
+  </div>
+  <section class="panel">
+    <div class="auth">
+      <input id="token" type="password" placeholder="Admin token">
+      <button id="load">Dashboard openen</button>
+    </div>
+    <div id="summary" class="sub">Voer je admin-token in om de pool te bekijken.</div>
+    <div id="grid" class="grid"><div class="empty">Nog geen gegevens geladen.</div></div>
+  </section>
+</main>
+<script>
+const tokenEl=document.getElementById('token'),loadBtn=document.getElementById('load'),refreshBtn=document.getElementById('refresh'),grid=document.getElementById('grid'),summary=document.getElementById('summary');
+let token=localStorage.getItem('hvmc_admin_token')||''; tokenEl.value=token;
+async function loadStatus(){
+  token=tokenEl.value.trim(); if(!token){summary.textContent='Admin-token ontbreekt.';return}
+  localStorage.setItem('hvmc_admin_token',token); summary.textContent='Laden…';
+  const r=await fetch('/v1/status',{headers:{'x-admin-token':token}}); const d=await r.json();
+  if(!r.ok){summary.textContent=d.error||'Geen toegang';grid.innerHTML='<div class="empty">Dashboard kon niet worden geladen.</div>';return}
+  const a=d.accounts||[]; const busy=a.filter(x=>x.busy).length; const free=a.filter(x=>!x.busy&&x.enabled).length;
+  summary.textContent=`${free} vrij · ${busy} bezet · ${a.length} totaal`;
+  grid.innerHTML=a.map(x=>`<article class="card"><div class="row"><div class="slot">${esc(x.label)}</div><span class="pill ${x.enabled?(x.busy?'busy':'free'):'disabled'}">${x.enabled?(x.busy?'BEZET':'VRIJ'):'UIT'}</span></div><div class="meta">Slot: ${esc(x.slot)}<br>${x.client_id?`Client: ${esc(x.client_id)}<br>Verloopt: ${esc(x.expires_at||'')}`:'Nog niet aan een lease gekoppeld.'}</div></article>`).join('');
+}
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+loadBtn.onclick=loadStatus;refreshBtn.onclick=loadStatus;
+if(token) loadStatus();
+</script>
+</body>
+</html>
