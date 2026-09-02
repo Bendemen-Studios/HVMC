@@ -11,6 +11,7 @@ $PackPath = Join-Path $Root 'HV.mrpack'
 $PoolConfigPath = Join-Path $Root 'pool.json'
 $OAuthConfigPath = Join-Path $Root 'oauth.json'
 $OAuthProfilePath = Join-Path $Root 'oauth-profile.json'
+$OAuthIdTokenPath = Join-Path $Root 'oauth-id-token.txt'
 $ManagedPath = Join-Path $Root 'managed-files.json'
 $McVersion = '1.21.11'
 $FabricLoader = '0.18.1'
@@ -31,10 +32,18 @@ function Download-File([string]$Url,[string]$Destination,[string]$ExpectedSha512
 }
 function Read-JsonFile([string]$Path) { if (Test-Path $Path) { try { return Get-Content $Path -Raw | ConvertFrom-Json } catch {} }; return $null }
 function Save-JsonFile($Object,[string]$Path) { $Object | ConvertTo-Json -Depth 20 | Set-Content $Path -Encoding UTF8 }
+function Read-SecureStringFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        $secure=Get-Content -LiteralPath $Path -Raw | ConvertTo-SecureString
+        $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+    } catch { return $null }
+}
 function Safe-Relative([string]$Relative) { $p=$Relative.Replace('/','\'); if ([IO.Path]::IsPathRooted($p) -or $p.Contains('..')) { throw "Unsafe path: $p" }; return $p }
 function Sync-PackEntry($Entry) {
-    $relative=Safe-Relative ([string]$Entry.path); $destination=Join-Path $Instance $relative; $sha512='';$sha1=''
-    if ($Entry.hashes) { if ($Entry.hashes.sha512){$sha512=[string]$Entry.hashes.sha512};if($Entry.hashes.sha1){$sha1=[string]$Entry.hashes.sha1} }
+    $relative=Safe-Relative ([string]$Entry.path);$destination=Join-Path $Instance $relative;$sha512='';$sha1=''
+    if($Entry.hashes){if($Entry.hashes.sha512){$sha512=[string]$Entry.hashes.sha512};if($Entry.hashes.sha1){$sha1=[string]$Entry.hashes.sha1}}
     $valid=$false
     if(Test-Path $destination){try{if($sha512){$valid=((Get-FileHash $destination -Algorithm SHA512).Hash -eq $sha512)}elseif($sha1){$valid=((Get-FileHash $destination -Algorithm SHA1).Hash -eq $sha1)}}catch{}}
     if($valid){return 'unchanged'}
@@ -46,8 +55,7 @@ function Remove-ManagedFiles([string[]]$OldFiles,[string[]]$NewFiles) {
     foreach($f in $OldFiles){if(-not $set.ContainsKey($f.ToLowerInvariant())){$path=Join-Path $Instance (Safe-Relative $f);if(Test-Path $path){try{Remove-Item $path -Force;Write-Log "Removed obsolete managed file: $f"}catch{Write-Log "Could not remove $f: $($_.Exception.Message)"}}}}
 }
 function Sync-Mrpack([string]$Mrpack) {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip=[IO.Compression.ZipFile]::OpenRead($Mrpack);$newManaged=New-Object 'System.Collections.Generic.List[string]'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem;$zip=[IO.Compression.ZipFile]::OpenRead($Mrpack);$newManaged=New-Object 'System.Collections.Generic.List[string]'
     try {
         $indexEntry=$zip.GetEntry('modrinth.index.json');if(-not $indexEntry){throw 'HV.mrpack does not contain modrinth.index.json.'}
         $tempIndex=Join-Path $Root ('index-'+[Guid]::NewGuid().ToString('N')+'.json');[IO.Compression.ZipFileExtensions]::ExtractToFile($indexEntry,$tempIndex,$true);$index=Read-JsonFile $tempIndex;Remove-Item $tempIndex -Force
@@ -64,8 +72,7 @@ function Sync-CustomTree([string]$RemotePath='content',[string]$LocalRoot=$Insta
     foreach($item in @($items)){
         if($item.type -eq 'dir'){Sync-CustomTree ([string]$item.path) $LocalRoot;continue}
         if($item.type -ne 'file'){continue}
-        $prefix='content/';$relative=Safe-Relative ([string]$item.path).Substring($prefix.Length);$destination=Join-Path $LocalRoot $relative
-        $remoteSize=[int64]$item.size;$sameSize=(Test-Path $destination -and (Get-Item $destination).Length -eq $remoteSize)
+        $prefix='content/';$relative=Safe-Relative ([string]$item.path).Substring($prefix.Length);$destination=Join-Path $LocalRoot $relative;$remoteSize=[int64]$item.size;$sameSize=(Test-Path $destination -and (Get-Item $destination).Length -eq $remoteSize)
         if(-not $sameSize){if(Download-File ([string]$item.download_url) $destination){Write-Log "Custom content updated: $relative"}}
     }
 }
@@ -93,7 +100,8 @@ function Get-PoolConfig {
 }
 function Ensure-OAuthProfile {
     $cfg=Get-PoolConfig;if(-not $cfg.enabled -or -not $cfg.requireOAuth){return $null}
-    if(Test-Path $OAuthProfilePath){return Read-JsonFile $OAuthProfilePath}
+    $profile=Read-JsonFile $OAuthProfilePath
+    if($profile -and (Test-Path $OAuthIdTokenPath)){return $profile}
     $oauthScript=Join-Path $PSScriptRoot 'HVMCOAuth.ps1';if(-not(Test-Path $oauthScript)){throw 'HVMCOAuth.ps1 is missing.'}
     if(-not(Test-Path $OAuthConfigPath)){$example=Join-Path $PSScriptRoot 'oauth-config.example.json';if(-not(Test-Path $example)){throw 'oauth-config.example.json is missing.'};Copy-Item $example $OAuthConfigPath -Force;throw "OAuth setup required. Edit $OAuthConfigPath with your Microsoft Application (client) ID and start again."}
     $result=& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $oauthScript 2>&1
@@ -102,7 +110,13 @@ function Ensure-OAuthProfile {
 }
 function Acquire-PoolLease($Profile) {
     $cfg=Get-PoolConfig;if(-not $cfg.enabled -or [string]::IsNullOrWhiteSpace([string]$cfg.url)){return $null}
-    try{$body=@{clientId="$env:COMPUTERNAME-$env:USERNAME";accountId=if($Profile){[string]$Profile.accountId}else{''};product='HVMC';minecraftVersion=$McVersion}|ConvertTo-Json;return Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/acquire' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 10}catch{Write-Log "Account pool unavailable: $($_.Exception.Message)";return $null}
+    $idToken=Read-SecureStringFile $OAuthIdTokenPath
+    if($cfg.requireOAuth -and -not $idToken){throw 'No Microsoft OAuth identity token is available.'}
+    try {
+        $headers=@{'Accept'='application/json'};if($idToken){$headers['Authorization']='Bearer '+$idToken}
+        $body=@{clientId="$env:COMPUTERNAME-$env:USERNAME";accountId=if($Profile){[string]$Profile.accountId}else{''};product='HVMC';minecraftVersion=$McVersion}|ConvertTo-Json
+        return Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/acquire' -Method Post -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 10
+    }catch{Write-Log "Account pool unavailable: $($_.Exception.Message)";return $null}
 }
 
 Write-Log 'Bootstrapper started.'
