@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using WpfMessageBox = System.Windows.MessageBox;
 
 namespace HVMCLauncher;
 
@@ -18,7 +19,6 @@ public partial class App : System.Windows.Application
         try
         {
             Directory.CreateDirectory(Root);
-
             var currentExe = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe))
                 throw new InvalidOperationException("HVMC kan het huidige uitvoerbare bestand niet vinden.");
@@ -26,8 +26,7 @@ public partial class App : System.Windows.Application
             var currentPath = Path.GetFullPath(currentExe);
             var installedPath = Path.GetFullPath(InstalledExe);
 
-            // The first time HVMC is launched, install the launcher into a stable
-            // per-user application directory and create normal Windows shortcuts.
+            // First launch: copy the single executable into a stable per-user app location.
             if (!string.Equals(currentPath, installedPath, StringComparison.OrdinalIgnoreCase))
             {
                 Directory.CreateDirectory(InstallDir);
@@ -52,7 +51,7 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
     }
