@@ -8,11 +8,10 @@ on:
       - 'HVMCUpdater.ps1'
       - 'version.txt'
       - '.github/workflows/build-launcher.yml'
-    tags: [ 'v*.*' ]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -33,14 +32,3 @@ jobs:
         with:
           name: HVMCLauncher-win-x64
           path: artifacts/HVMCLauncher/HVMCLauncher.exe
-      - name: Create versioned release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: HVMC Release ${{ github.ref_name }}
-          generate_release_notes: true
-          prerelease: false
-          files: artifacts/HVMCLauncher/HVMCLauncher.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
