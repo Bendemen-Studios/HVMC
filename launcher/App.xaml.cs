@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -7,6 +8,10 @@ namespace HVMCLauncher;
 
 public partial class App : System.Windows.Application
 {
+    private const string AppName = "HVMC";
+    private const string Publisher = "Bendemen Studios";
+    private const string AppVersion = "1.0.0";
+
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Bendemen", "HVMC");
@@ -18,7 +23,15 @@ public partial class App : System.Windows.Application
     {
         try
         {
+            if (e.Args.Any(a => string.Equals(a, "--uninstall", StringComparison.OrdinalIgnoreCase)))
+            {
+                Uninstall();
+                Shutdown();
+                return;
+            }
+
             Directory.CreateDirectory(Root);
+
             var currentExe = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe))
                 throw new InvalidOperationException("HVMC kan het huidige uitvoerbare bestand niet vinden.");
@@ -26,11 +39,13 @@ public partial class App : System.Windows.Application
             var currentPath = Path.GetFullPath(currentExe);
             var installedPath = Path.GetFullPath(InstalledExe);
 
-            // First launch: copy the single executable into a stable per-user app location.
+            // First launch: install the executable into a stable per-user application
+            // location, register it with Windows and create Start-menu/Desktop shortcuts.
             if (!string.Equals(currentPath, installedPath, StringComparison.OrdinalIgnoreCase))
             {
                 Directory.CreateDirectory(InstallDir);
                 File.Copy(currentPath, InstalledExe, true);
+                RegisterWindowsApp();
                 CreateShortcuts();
 
                 Process.Start(new ProcessStartInfo
@@ -44,6 +59,7 @@ public partial class App : System.Windows.Application
                 return;
             }
 
+            RegisterWindowsApp();
             CreateShortcuts();
             var window = new MainWindow();
             MainWindow = window;
@@ -51,9 +67,76 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            WpfMessageBox.Show(ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(ex.Message, AppName, MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
+    }
+
+    private static void RegisterWindowsApp()
+    {
+        try
+        {
+            using var uninstall = Registry.CurrentUser.CreateSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Uninstall\HVMC", true);
+            if (uninstall is null) return;
+
+            uninstall.SetValue("DisplayName", AppName);
+            uninstall.SetValue("DisplayVersion", AppVersion);
+            uninstall.SetValue("Publisher", Publisher);
+            uninstall.SetValue("InstallLocation", InstallDir);
+            uninstall.SetValue("DisplayIcon", InstalledExe);
+            uninstall.SetValue("NoModify", 1, RegistryValueKind.DWord);
+            uninstall.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+            uninstall.SetValue("UninstallString", $"\"{InstalledExe}\" --uninstall");
+        }
+        catch
+        {
+            // Windows app registration is best-effort and must not block startup.
+        }
+    }
+
+    private static void Uninstall()
+    {
+        try
+        {
+            var startMenuShortcut = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                "Programs", "HVMC", "HVMC.lnk");
+            var desktopShortcut = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                "HVMC.lnk");
+
+            File.Delete(startMenuShortcut);
+            File.Delete(desktopShortcut);
+            Directory.Delete(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                "Programs", "HVMC"), true);
+        }
+        catch { }
+
+        try
+        {
+            Registry.CurrentUser.DeleteSubKeyTree(
+                @"Software\Microsoft\Windows\CurrentVersion\Uninstall\HVMC", false);
+        }
+        catch { }
+
+        try
+        {
+            var current = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(current)) return;
+            var pid = Environment.ProcessId;
+            var script = "$pid=" + pid + ";$path=" + Ps(InstallDir) + ";Start-Sleep -Milliseconds 700;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){Start-Sleep -Milliseconds 200};if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Recurse -Force}";
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                ArgumentList = { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script }
+            });
+        }
+        catch { }
     }
 
     private static void CreateShortcuts()
@@ -78,10 +161,10 @@ public partial class App : System.Windows.Application
 
     private static void WriteShortcut(string shortcutPath)
     {
-        var target = EscapePowerShellLiteral(InstalledExe);
-        var workingDir = EscapePowerShellLiteral(InstallDir);
-        var link = EscapePowerShellLiteral(shortcutPath);
-        var description = EscapePowerShellLiteral("HVMC - Hero's Vault MC");
+        var target = Ps(InstalledExe);
+        var workingDir = Ps(InstallDir);
+        var link = Ps(shortcutPath);
+        var description = Ps("HVMC - Hero's Vault MC");
 
         var script = "$shell=New-Object -ComObject WScript.Shell;" +
                      $"$shortcut=$shell.CreateShortcut('{link}');" +
@@ -109,6 +192,6 @@ public partial class App : System.Windows.Application
         process?.WaitForExit(5000);
     }
 
-    private static string EscapePowerShellLiteral(string value) =>
+    private static string Ps(string value) =>
         value.Replace("'", "''", StringComparison.Ordinal);
 }
