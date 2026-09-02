@@ -16,8 +16,21 @@ function Log([string]$Message) {
     Write-Host "[HVMC] $Message"
     try { Add-Content -LiteralPath $LogPath -Value (("{0:u} {1}" -f (Get-Date),$Message)) -Encoding UTF8 } catch {}
 }
-function GitHub([string]$Path) {
-    Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/contents/$Path?ref=$Branch" -Headers @{'User-Agent'='HVMC-Updater'} -TimeoutSec 30
+function Get-RemoteFiles {
+    $uri = "https://api.github.com/repos/$Repo/git/trees/$Branch?recursive=1"
+    try {
+        $tree = Invoke-RestMethod -Uri $uri -Headers @{'User-Agent'='HVMC-Updater';'Accept'='application/vnd.github+json'} -TimeoutSec 30
+    } catch {
+        throw "GitHub content index ophalen mislukt: $($_.Exception.Message)"
+    }
+    if (-not $tree.tree) { throw 'GitHub content index bevat geen bestanden.' }
+    @($tree.tree | Where-Object { $_.type -eq 'blob' -and $_.path -like 'content/*' } | ForEach-Object {
+        [pscustomobject]@{
+            path = [string]$_.path
+            sha = [string]$_.sha
+            download = "https://raw.githubusercontent.com/$Repo/$Branch/$($_.path)"
+        }
+    })
 }
 function Safe([string]$Path) {
     $p = $Path.Replace('/','\')
@@ -43,14 +56,6 @@ function ReadJson([string]$Path) {
 }
 function SaveJson($Value,[string]$Path) {
     $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
-}
-function CollectFiles([string]$RemotePath='content') {
-    $result = @()
-    foreach ($item in @(GitHub $RemotePath)) {
-        if ($item.type -eq 'dir') { $result += CollectFiles ([string]$item.path) }
-        elseif ($item.type -eq 'file') { $result += [pscustomobject]@{ path=[string]$item.path; sha=[string]$item.sha; download=[string]$item.download_url } }
-    }
-    return $result
 }
 function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
     if (-not (Test-Path -LiteralPath $FilePath)) { return $false }
@@ -81,9 +86,13 @@ function Ensure-Fabric {
 
 try {
     Log 'HVMC updater gestart.'
-    $remoteVersion = ([string](Invoke-RestMethod -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-Updater'} -TimeoutSec 20)).Trim()
+    $versionResponse = Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-Updater'} -UseBasicParsing -TimeoutSec 20
+    $remoteVersion = ([string]$versionResponse.Content).Trim()
+    if ([string]::IsNullOrWhiteSpace($remoteVersion)) { throw 'version.txt is leeg.' }
     Log "Beschikbare HVMC versie: $remoteVersion"
-    $remoteFiles = @(CollectFiles 'content')
+
+    $remoteFiles = @(Get-RemoteFiles)
+    Log "Beheerde contentbestanden: $($remoteFiles.Count)"
     $oldManifest = ReadJson $ManifestPath
     $oldEntries = @{}
     if ($oldManifest -and $oldManifest.files) { foreach ($entry in @($oldManifest.files)) { $oldEntries[[string]$entry.path] = [string]$entry.sha } }
