@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "targetFps": 60,
+  "minFps": 45,
+  "maxFps": 75,
+  "adjustmentSpeed": "MEDIUM",
+  "showIndicator": true,
+  "hysteresis": 5,
+  "adjustmentCooldown": 20,
+  "predictiveMode": true,
+  "smoothTransitions": true,
+  "aggressiveness": 2,
+  "dynamicIncrease": false,
+  "onlyAdjustWhenStill": true,
+  "priorities": {
+    "RENDER_DISTANCE": 80,
+    "ENTITY_SHADOWS": 50,
+    "SMOOTH_LIGHTING": 25,
+    "MIPMAP_LEVELS": 20,
+    "SIMULATION_DISTANCE": 70,
+    "ENTITY_DISTANCE": 60,
+    "CLOUDS": 40,
+    "PARTICLES": 35,
+    "BIOME_BLEND": 30
+  }
+}
