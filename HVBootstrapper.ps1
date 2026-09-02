@@ -2,15 +2,18 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = 'Bendemen-Studios/HVMC'
 $Branch = 'main'
+$MinecraftDir = Join-Path $env:APPDATA '.minecraft'
 $Root = Join-Path $env:LOCALAPPDATA 'Bendemen\HVMC'
-$Instance = Join-Path $Root 'instance'
+$Instance = $MinecraftDir
 $StatePath = Join-Path $Root 'state.json'
 $LogPath = Join-Path $Root 'bootstrapper.log'
 $PackPath = Join-Path $Root 'HV.mrpack'
-$ShortcutPath = Join-Path $Root 'HV.lnk'
+$PoolConfigPath = Join-Path $Root 'pool.json'
 $ManagedPath = Join-Path $Root 'managed-files.json'
+$McVersion = '1.21.11'
+$FabricLoader = '0.18.1'
 
-foreach ($dir in @($Root,$Instance,$Instance+'\mods',$Instance+'\config',$Instance+'\resourcepacks',$Instance+'\shaderpacks',$Instance+'\datapacks',$Instance+'\kubejs')) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+foreach ($dir in @($Root,$MinecraftDir,$MinecraftDir+'\mods',$MinecraftDir+'\config',$MinecraftDir+'\resourcepacks',$MinecraftDir+'\shaderpacks',$MinecraftDir+'\datapacks',$MinecraftDir+'\kubejs')) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 
 function Write-Log([string]$Message) { try { Add-Content -LiteralPath $LogPath -Value ("{0:u} {1}" -f (Get-Date),$Message) -Encoding UTF8 } catch {} }
 function Get-GitHubFile([string]$Name) { Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/contents/$Name?ref=$Branch" -Headers @{'User-Agent'='HVMC-Bootstrapper'} -TimeoutSec 20 }
@@ -60,24 +63,90 @@ function Sync-CustomTree([string]$RemotePath='content',[string]$LocalRoot=$Insta
         if($item.type -eq 'dir'){Sync-CustomTree ([string]$item.path) $LocalRoot;continue}
         if($item.type -ne 'file'){continue}
         $prefix='content/';$relative=Safe-Relative ([string]$item.path).Substring($prefix.Length);$destination=Join-Path $LocalRoot $relative
-        # GitHub's tree SHA is not a local file hash, so use a cheap size check first and
-        # replace atomically when downloading. Custom content is deliberately not trusted as
-        # the authoritative deletion set; only files supplied by the operator are synchronized.
-        $remoteSize=[int64]$item.size;$sameSize=(Test-Path $destination -and (Get-Item $destination).Length -eq $remoteSize)
+        $remoteSize=[int64]$item.size
+        $sameSize=(Test-Path $destination -and (Get-Item $destination).Length -eq $remoteSize)
         if(-not $sameSize){if(Download-File ([string]$item.download_url) $destination){Write-Log "Custom content updated: $relative"}}
     }
 }
+function Test-OfficialLauncher {
+    $paths=@(
+        (Join-Path ${env:ProgramFiles(x86)} 'Minecraft Launcher\MinecraftLauncher.exe'),
+        (Join-Path $env:ProgramFiles 'Minecraft Launcher\MinecraftLauncher.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Minecraft Launcher\MinecraftLauncher.exe')
+    )
+    foreach($p in $paths){if($p -and (Test-Path $p)){return $p}}
+    return $null
+}
+function Ensure-OfficialLauncher {
+    $launcher=Test-OfficialLauncher
+    if($launcher){return $launcher}
+    $winget=Get-Command winget.exe -ErrorAction SilentlyContinue
+    if($winget){
+        Write-Log 'Official Minecraft Launcher missing; installing via WinGet.'
+        try { & $winget.Source install --id Mojang.MinecraftLauncher --exact --silent --accept-package-agreements --accept-source-agreements | Out-Null } catch { Write-Log "WinGet launcher install failed: $($_.Exception.Message)" }
+        $launcher=Test-OfficialLauncher
+        if($launcher){return $launcher}
+    }
+    $installer=Join-Path $Root 'MinecraftInstaller.msi'
+    if(-not (Download-File 'https://launcher.mojang.com/download/MinecraftInstaller.msi' $installer)){throw 'Official Minecraft Launcher could not be downloaded.'}
+    Start-Process msiexec.exe -ArgumentList '/i',('"'+$installer+'"'),'/quiet','/norestart' -Wait
+    $launcher=Test-OfficialLauncher
+    if(-not $launcher){throw 'Official Minecraft Launcher installation did not produce MinecraftLauncher.exe.'}
+    return $launcher
+}
+function Ensure-Fabric {
+    $fabricVersion=Join-Path $MinecraftDir "versions\fabric-loader-$FabricLoader-$McVersion\fabric-loader-$FabricLoader-$McVersion.json"
+    if(Test-Path $fabricVersion){return}
+    $meta=Invoke-RestMethod -Uri 'https://meta.fabricmc.net/v2/versions/installer' -Headers @{'User-Agent'='HVMC-Bootstrapper'} -TimeoutSec 30
+    $installer=$meta | Where-Object { $_.stable -eq $true } | Select-Object -First 1
+    if(-not $installer){throw 'Could not find a stable Fabric installer.'}
+    $installerPath=Join-Path $Root 'fabric-installer.exe'
+    if(-not (Download-File ([string]$installer.exe) $installerPath)){throw 'Could not download Fabric installer.'}
+    Write-Log "Installing Fabric $FabricLoader for Minecraft $McVersion."
+    $p=Start-Process $installerPath -ArgumentList 'client','-dir',('"'+$MinecraftDir+'"'),'-mcversion',$McVersion,'-loader',$FabricLoader -Wait -PassThru
+    if($p.ExitCode -ne 0 -or -not(Test-Path $fabricVersion)){throw 'Fabric installation failed.'}
+}
+function Get-PoolConfig {
+    $cfg=Read-JsonFile $PoolConfigPath
+    if(-not $cfg){
+        $cfg=[pscustomobject]@{enabled=$false;url='';autoSelect=$true}
+        Save-JsonFile $cfg $PoolConfigPath
+    }
+    return $cfg
+}
+function Acquire-PoolLease {
+    $cfg=Get-PoolConfig
+    if(-not $cfg.enabled -or [string]::IsNullOrWhiteSpace([string]$cfg.url)){return $null}
+    try {
+        $body=@{clientId="$env:COMPUTERNAME-$env:USERNAME";product='HVMC';minecraftVersion=$McVersion} | ConvertTo-Json
+        $lease=Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/acquire' -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 10
+        if($lease){Write-Log "Account lease acquired: $($lease.accountName)"}
+        return $lease
+    } catch { Write-Log "Account pool unavailable: $($_.Exception.Message)"; return $null }
+}
+function Release-PoolLease($Lease) {
+    if(-not $Lease){return}
+    $cfg=Get-PoolConfig
+    if(-not $cfg.enabled -or [string]::IsNullOrWhiteSpace([string]$cfg.url)){return}
+    try { Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/release' -Method Post -ContentType 'application/json' -Body (@{leaseId=[string]$Lease.leaseId}|ConvertTo-Json) -TimeoutSec 5 | Out-Null } catch {}
+}
 
 Write-Log 'Bootstrapper started.'
+$lease=$null
 try {
-    $remotePack=Get-GitHubFile 'HV.mrpack';$state=Read-JsonFile $StatePath
-    if(-not(Test-Path $PackPath)-or -not $state -or [string]$state.packSha -ne [string]$remotePack.sha){if(-not(Download-File $remotePack.download_url $PackPath)){throw 'Could not download HV.mrpack.'};Save-JsonFile ([pscustomobject]@{packSha=[string]$remotePack.sha}) $StatePath}
-    $index=Sync-Mrpack $PackPath;Write-Log "Pack synchronized: $($index.name) $($index.versionId)"
-}catch{Write-Log "Pack synchronization failed: $($_.Exception.Message)"}
-try{Sync-CustomTree}catch{Write-Log "Custom content sync failed: $($_.Exception.Message)"}
-
-# Authentication is intentionally left to the existing installed Minecraft/Modrinth
-# profile for now. The bootstrapper performs all content synchronization before launch.
-if(Test-Path $ShortcutPath){try{$shell=New-Object -ComObject WScript.Shell;$shell.Run('"'+$ShortcutPath+'"',0,$false);Write-Log 'HV.lnk launched after synchronization.';exit 0}catch{Write-Log "Shortcut launch failed: $($_.Exception.Message)"}}
-try{$remoteShortcut=Get-GitHubFile 'HV.lnk';if(Download-File $remoteShortcut.download_url $ShortcutPath){$shell=New-Object -ComObject WScript.Shell;$shell.Run('"'+$ShortcutPath+'"',0,$false);Write-Log 'HV.lnk downloaded and launched.';exit 0}}catch{Write-Log "Fallback launch failed: $($_.Exception.Message)"}
-Write-Log 'Synchronization completed but no launcher shortcut is available.';exit 1
+    try { $remotePack=Get-GitHubFile 'HV.mrpack';$state=Read-JsonFile $StatePath;if(-not(Test-Path $PackPath)-or -not $state -or [string]$state.packSha -ne [string]$remotePack.sha){if(-not(Download-File $remotePack.download_url $PackPath)){throw 'Could not download HV.mrpack.'};Save-JsonFile ([pscustomobject]@{packSha=[string]$remotePack.sha}) $StatePath};$index=Sync-Mrpack $PackPath;Write-Log "Pack synchronized: $($index.name) $($index.versionId)" } catch { Write-Log "Pack synchronization failed: $($_.Exception.Message)" }
+    try { Sync-CustomTree } catch { Write-Log "Custom content sync failed: $($_.Exception.Message)" }
+    try { Ensure-OfficialLauncher } catch { Write-Log "Official launcher setup failed: $($_.Exception.Message)" }
+    try { Ensure-Fabric } catch { Write-Log "Fabric setup failed: $($_.Exception.Message)" }
+    $lease=Acquire-PoolLease
+    if($lease -and $lease.accountName){Write-Log "Pool selected account: $($lease.accountName). Open the official launcher and use that account."}
+    $launcher=Test-OfficialLauncher
+    if(-not $launcher){throw 'Minecraft Launcher is not installed.'}
+    Write-Log 'Starting official Minecraft Launcher.'
+    Start-Process $launcher
+    exit 0
+} finally {
+    # The official launcher owns the Minecraft session; a lease should be released by the pool heartbeat/client.
+    # Do not immediately release it here because the game may still be starting.
+    Write-Log 'Bootstrapper finished.'
+}
