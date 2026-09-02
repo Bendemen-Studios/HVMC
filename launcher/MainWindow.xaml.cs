@@ -1,6 +1,7 @@
 using CmlLib.Core;
 using System.Diagnostics;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
@@ -11,6 +12,7 @@ namespace HVMCLauncher;
 public partial class MainWindow : Window
 {
     private const string PoolApi = "https://accounts.hvmc.nl";
+    private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "1.21.11";
     private const string FabricVersion = "0.18.1";
     private const int MaximumRamMb = 4096;
@@ -25,6 +27,28 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Directory.CreateDirectory(_root);
+        Loaded += MainWindow_Loaded;
+    }
+
+    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        PlayButton.IsEnabled = false;
+        ExitButton.IsEnabled = true;
+        try
+        {
+            SetStatus("HVMC controleren...");
+            var restarted = await CheckForLauncherUpdateAsync();
+            if (restarted) return;
+            SetStatus("Klaar om te spelen.");
+            PlayButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            // A launcher update is optional; an existing launcher should still be usable.
+            SetStatus("Klaar om te spelen.");
+            PlayButton.IsEnabled = true;
+            Debug.WriteLine($"Launcher update check failed: {ex}");
+        }
     }
 
     private async void PlayButton_Click(object sender, RoutedEventArgs e)
@@ -33,7 +57,7 @@ public partial class MainWindow : Window
         ExitButton.IsEnabled = false;
         try
         {
-            SetStatus("Updates controleren...");
+            SetStatus("HVMC controleren...");
             await RunUpdaterAsync();
 
             _clientId = GetStableClientId();
@@ -53,8 +77,6 @@ public partial class MainWindow : Window
             SetStatus("Minecraft controleren...");
             await minecraftLauncher.InstallAsync(MinecraftVersion);
 
-            // Use the actual Windows primary-display pixel size. This supports 16:9,
-            // 16:10, 21:9 and other normal/ultrawide displays without a launcher setting.
             var display = Forms.Screen.PrimaryScreen?.Bounds;
             var width = display?.Width ?? 1920;
             var height = display?.Height ?? 1080;
@@ -92,6 +114,64 @@ public partial class MainWindow : Window
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private async Task<bool> CheckForLauncherUpdateAsync()
+    {
+        var currentExe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe)) return false;
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
+        request.Headers.UserAgent.ParseAdd("HVMC-Launcher");
+        using var response = await _http.SendAsync(request);
+        if (!response.IsSuccessStatusCode) return false;
+        var json = await response.Content.ReadAsStringAsync();
+        var release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
+        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMCLauncher.exe", StringComparison.OrdinalIgnoreCase));
+        if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
+
+        SetStatus("Launcher-versie controleren...");
+        var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
+        using (var dl = await _http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead))
+        {
+            dl.EnsureSuccessStatusCode();
+            await using var source = await dl.Content.ReadAsStreamAsync();
+            await using var target = File.Create(temp);
+            await source.CopyToAsync(target);
+        }
+
+        var currentHash = await Sha256Async(currentExe);
+        var newHash = await Sha256Async(temp);
+        if (CryptographicOperations.FixedTimeEquals(currentHash, newHash))
+        {
+            File.Delete(temp);
+            return false;
+        }
+
+        SetStatus("Nieuwe launcher gevonden. Updaten...");
+        ScheduleSelfReplacement(currentExe, temp);
+        return true;
+    }
+
+    private static async Task<byte[]> Sha256Async(string path)
+    {
+        await using var stream = File.OpenRead(path);
+        return await SHA256.HashDataAsync(stream);
+    }
+
+    private static void ScheduleSelfReplacement(string currentExe, string updateExe)
+    {
+        var pid = Environment.ProcessId;
+        static string Ps(string value) => "'" + value.Replace("'", "''") + "'";
+        var script = $"$pid={pid};$src={Ps(updateExe)};$dst={Ps(currentExe)};Start-Sleep -Milliseconds 800;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};Move-Item -LiteralPath $src -Destination $dst -Force;Start-Process -FilePath $dst";
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+        Environment.Exit(0);
+    }
 
     private async Task RunUpdaterAsync()
     {
@@ -195,5 +275,7 @@ public partial class MainWindow : Window
         string? Xuid
     );
     private sealed record ApiError(string Error);
+    private sealed record GitHubRelease(List<GitHubAsset>? Assets);
+    private sealed record GitHubAsset(string Name, string BrowserDownloadUrl);
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 }
