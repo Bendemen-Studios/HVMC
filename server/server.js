@@ -3,15 +3,19 @@ import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createRemoteJWKSet, jwtVerify, SignJWT } from 'jose';
 
 const PORT = Number(process.env.PORT || 8080);
 const DB_PATH = process.env.DB_PATH || './hvmc-pool.db';
 const MICROSOFT_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID || '';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'bendemen';
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '';
+const ADMIN_SESSION_SECRET = crypto.createHash('sha256').update(String(process.env.ADMIN_SESSION_SECRET || ADMIN_TOKEN)).digest();
 const DEFAULT_LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 3600);
 if (!MICROSOFT_CLIENT_ID) throw new Error('MICROSOFT_CLIENT_ID is required');
 if (!ADMIN_TOKEN) throw new Error('ADMIN_TOKEN is required');
+if (!ADMIN_PASSWORD_HASH) throw new Error('ADMIN_PASSWORD_HASH is required');
 
 const app = express();
 app.use(express.json({ limit: '32kb' }));
@@ -19,6 +23,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -44,7 +49,6 @@ CREATE INDEX IF NOT EXISTS idx_leases_account ON leases(account_id);
 CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases(expires_at);
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
-
 const insertSlot = db.prepare('INSERT OR IGNORE INTO accounts (slot,label,created_at) VALUES (?,?,?)');
 for (let i = 1; i <= 5; i++) insertSlot.run(`account-${String(i).padStart(2, '0')}`, `HVMC Account ${i}`, new Date().toISOString());
 
@@ -59,10 +63,47 @@ async function verifyMicrosoftIdToken(req) {
   return { oid, name: String(payload.name || ''), preferredUsername: String(payload.preferred_username || '') };
 }
 function cleanupExpired() { db.prepare('DELETE FROM leases WHERE expires_at <= ?').run(new Date().toISOString()); }
-function isAdmin(req) { return String(req.headers['x-admin-token'] || '') === ADMIN_TOKEN; }
-function requireAdmin(req, res) { if (!isAdmin(req)) { res.status(403).json({ error: 'forbidden' }); return false; } return true; }
+function safeEqual(a, b) { const aa = Buffer.from(String(a)); const bb = Buffer.from(String(b)); return aa.length === bb.length && crypto.timingSafeEqual(aa, bb); }
+function verifyPassword(password) {
+  const parts = String(ADMIN_PASSWORD_HASH).split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+  const [, nText, rText, pText, saltB64, hashB64] = parts;
+  const N = Number(nText), r = Number(rText), p = Number(pText);
+  if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p) || !saltB64 || !hashB64) return false;
+  try {
+    const salt = Buffer.from(saltB64, 'base64');
+    const expected = Buffer.from(hashB64, 'base64');
+    const actual = crypto.scryptSync(String(password), salt, expected.length, { N, r, p, maxmem: 64 * 1024 * 1024 });
+    return safeEqual(actual, expected);
+  } catch { return false; }
+}
+async function createAdminSession() {
+  return new SignJWT({ role: 'admin', username: ADMIN_USERNAME })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('12h')
+    .sign(ADMIN_SESSION_SECRET);
+}
+async function isAdmin(req) {
+  const legacy = String(req.headers['x-admin-token'] || '');
+  if (legacy && safeEqual(legacy, ADMIN_TOKEN)) return true;
+  const auth = String(req.headers.authorization || '');
+  if (!auth.startsWith('Bearer ')) return false;
+  try {
+    const { payload } = await jwtVerify(auth.slice(7).trim(), ADMIN_SESSION_SECRET, { algorithms: ['HS256'] });
+    return payload.role === 'admin' && payload.username === ADMIN_USERNAME;
+  } catch { return false; }
+}
+async function requireAdmin(req, res) { if (!(await isAdmin(req))) { res.status(401).json({ error: 'unauthorized' }); return false; } return true; }
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'hvmc-account-pool' }));
+app.post('/v1/admin/login', async (req, res) => {
+  const username = String(req.body?.username || '');
+  const password = String(req.body?.password || '');
+  if (!safeEqual(username, ADMIN_USERNAME) || !verifyPassword(password)) return res.status(401).json({ error: 'Ongeldige gebruikersnaam of wachtwoord' });
+  const token = await createAdminSession();
+  res.json({ ok: true, token, expiresIn: 43200, username: ADMIN_USERNAME });
+});
 
 app.post('/v1/lease/acquire', async (req, res) => {
   try {
@@ -112,15 +153,15 @@ app.post('/v1/lease/release', async (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
 
-app.get('/v1/status', (req, res) => {
-  if (!requireAdmin(req, res)) return;
+app.get('/v1/status', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   cleanupExpired();
   const rows = db.prepare(`SELECT accounts.id,accounts.slot,accounts.label,accounts.enabled,accounts.microsoft_oid,accounts.microsoft_username,CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
   res.json({ accounts: rows });
 });
 
-app.post('/v1/admin/accounts', (req, res) => {
-  if (!requireAdmin(req, res)) return;
+app.post('/v1/admin/accounts', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   const label = String(req.body?.label || '').trim().slice(0, 100);
   const slot = String(req.body?.slot || `account-${String(db.prepare('SELECT COALESCE(MAX(id),0)+1 AS n FROM accounts').get().n).padStart(2,'0')}`).trim().slice(0, 100);
   if (!label || !slot) return res.status(400).json({ error: 'label and slot are required' });
@@ -130,8 +171,8 @@ app.post('/v1/admin/accounts', (req, res) => {
   } catch (err) { res.status(409).json({ error: 'Could not create account: ' + err.message }); }
 });
 
-app.patch('/v1/admin/accounts/:id', (req, res) => {
-  if (!requireAdmin(req, res)) return;
+app.patch('/v1/admin/accounts/:id', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   const id = Number(req.params.id);
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
   if (!account) return res.status(404).json({ error: 'account not found' });
@@ -142,8 +183,8 @@ app.patch('/v1/admin/accounts/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/v1/admin/accounts/:id', (req, res) => {
-  if (!requireAdmin(req, res)) return;
+app.delete('/v1/admin/accounts/:id', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   const id = Number(req.params.id);
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
   if (!account) return res.status(404).json({ error: 'account not found' });
@@ -152,16 +193,16 @@ app.delete('/v1/admin/accounts/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/v1/admin/accounts/:id/unlink', (req, res) => {
-  if (!requireAdmin(req, res)) return;
+app.post('/v1/admin/accounts/:id/unlink', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   const id = Number(req.params.id);
   const info = db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL WHERE id = ?').run(id);
   if (!info.changes) return res.status(404).json({ error: 'account not found' });
   res.json({ ok: true });
 });
 
-app.post('/v1/admin/reset-mapping', (req, res) => {
-  if (!requireAdmin(req, res)) return;
+app.post('/v1/admin/reset-mapping', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
   db.prepare('DELETE FROM leases').run();
   db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL').run();
   res.json({ ok: true });
