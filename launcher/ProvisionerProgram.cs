@@ -2,6 +2,7 @@ using CmlLib.Core.Auth;
 using CmlLib.Core.Auth.Microsoft;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using XboxAuthNet.Game.Msal;
 
 const string ClientId = "7fcdeaa7-ba20-4883-96b0-0b68cff24bb9";
 var loggerFactory = LoggerFactory.Create(config => config.ClearProviders().SetMinimumLevel(LogLevel.Warning));
