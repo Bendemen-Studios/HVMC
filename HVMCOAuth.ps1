@@ -5,6 +5,9 @@ $ConfigPath = Join-Path $Root 'oauth.json'
 $RefreshTokenPath = Join-Path $Root 'oauth-refresh-token.txt'
 $IdTokenPath = Join-Path $Root 'oauth-id-token.txt'
 $ProfilePath = Join-Path $Root 'oauth-profile.json'
+$DefaultClientId = '7fcdeaa7-ba20-4883-96b0-0b68cff24bb9'
+$DefaultAuthority = 'https://login.microsoftonline.com/common'
+$DefaultScopes = @('openid','profile','offline_access','https://graph.microsoft.com/User.Read')
 
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
 
@@ -32,34 +35,48 @@ function Decode-JwtPayload([string]$Jwt) {
 
 $config = Read-Json $ConfigPath
 if (-not $config) {
-    $example = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'oauth-config.example.json'
-    if (Test-Path $example) { Copy-Item $example $ConfigPath -Force }
-    throw "OAuth is not configured. Edit $ConfigPath and set clientId to your Microsoft App Registration client ID."
+    $config = [pscustomobject]@{
+        clientId = $DefaultClientId
+        authority = $DefaultAuthority
+        scopes = $DefaultScopes
+    }
+    Save-Json $config $ConfigPath
 }
 
 $clientId = [string]$config.clientId
 if ([string]::IsNullOrWhiteSpace($clientId) -or $clientId -like 'PASTE-*') { throw "OAuth clientId is not configured in $ConfigPath." }
 $authority = [string]$config.authority
-if ([string]::IsNullOrWhiteSpace($authority)) { $authority = 'https://login.microsoftonline.com/common' }
-$scope = (@($config.scopes) -join ' ')
-if ([string]::IsNullOrWhiteSpace($scope)) { $scope = 'openid profile offline_access https://graph.microsoft.com/User.Read' }
+if ([string]::IsNullOrWhiteSpace($authority)) { $authority = $DefaultAuthority }
+$scopeValues = @($config.scopes)
+if ($scopeValues.Count -eq 0) { $scopeValues = $DefaultScopes }
+$scope = ($scopeValues -join ' ')
 
 function Request-Token([string]$RefreshToken) {
     Invoke-RestMethod -Uri "$authority/oauth2/v2.0/token" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
-        client_id = $clientId; grant_type = 'refresh_token'; refresh_token = $RefreshToken; scope = $scope
+        client_id = $clientId
+        grant_type = 'refresh_token'
+        refresh_token = $RefreshToken
+        scope = $scope
     } -TimeoutSec 30
 }
 function Device-Login {
     $device = Invoke-RestMethod -Uri "$authority/oauth2/v2.0/devicecode" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
-        client_id = $clientId; scope = $scope
+        client_id = $clientId
+        scope = $scope
     } -TimeoutSec 30
-    Write-Host ''; Write-Host 'HVMC Microsoft login required.'; Write-Host $device.message; Write-Host ''
-    $interval = [Math]::Max([int]$device.interval,5); $deadline = (Get-Date).AddSeconds([int]$device.expires_in)
+    Write-Host ''
+    Write-Host 'HVMC Microsoft login required.'
+    Write-Host $device.message
+    Write-Host ''
+    $interval = [Math]::Max([int]$device.interval,5)
+    $deadline = (Get-Date).AddSeconds([int]$device.expires_in)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds $interval
         try {
             return Invoke-RestMethod -Uri "$authority/oauth2/v2.0/token" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body @{
-                client_id=$clientId; grant_type='urn:ietf:params:oauth:grant-type:device_code'; device_code=[string]$device.device_code
+                client_id=$clientId
+                grant_type='urn:ietf:params:oauth:grant-type:device_code'
+                device_code=[string]$device.device_code
             } -TimeoutSec 30
         } catch {
             $text = $_.ErrorDetails.Message
