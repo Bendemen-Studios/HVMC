@@ -1,11 +1,5 @@
 using CmlLib.Core;
-using CmlLib.Core.Auth;
-using CmlLib.Core.Auth.Microsoft;
-using CmlLib.Core.Auth.Microsoft.Sessions;
-using Microsoft.Extensions.Logging;
 using System.Diagnostics;
-using System.IO;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
@@ -15,15 +9,15 @@ namespace HVMCLauncher;
 public partial class MainWindow : Window
 {
     private const string PoolApi = "https://accounts.hvmc.nl";
-    private const string MicrosoftClientId = "7fcdeaa7-ba20-4883-96b0-0b68cff24bb9";
     private const string MinecraftVersion = "1.21.11";
     private const string FabricVersion = "0.18.1";
     private const int MaximumRamMb = 4096;
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
     private string? _leaseId;
     private string? _clientId;
+    private CancellationTokenSource? _heartbeatCts;
 
     public MainWindow()
     {
@@ -45,36 +39,33 @@ public partial class MainWindow : Window
             var lease = await AcquireLeaseAsync(_clientId);
             _leaseId = lease.LeaseId;
 
-            SetStatus($"{lease.AccountName} wordt klaargemaakt...");
-            var handler = BuildLoginHandler();
-            var account = FindLocalAccount(handler, lease.MicrosoftUsername);
-            if (account is null)
-            {
-                throw new InvalidOperationException(
-                    $"Het pool-account '{lease.AccountName}' is nog niet lokaal aangemeld op deze pc. " +
-                    "Laat een beheerder dit Microsoft-account één keer aanmelden op deze pc.");
-            }
-
-            SetStatus("Microsoft-sessie voorbereiden...");
-            var session = await AuthenticateSilentlyAsync(handler, account);
-
+            SetStatus($"{lease.AccountName} geselecteerd.");
             var minecraftPath = new MinecraftPath(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
-            var launcher = new MinecraftLauncher(minecraftPath);
-            SetStatus("Minecraft voorbereiden...");
-            await launcher.InstallAsync(MinecraftVersion);
+            var minecraftLauncher = new MinecraftLauncher(minecraftPath);
+
+            // The VPS performs Microsoft/Xbox/XSTS authentication and returns only
+            // a short-lived Minecraft Java session. No Microsoft login is required on the youth PC.
+            var session = new MSession(lease.Username, lease.MinecraftAccessToken, lease.Uuid)
+            {
+                Xuid = lease.Xuid ?? string.Empty
+            };
+
+            SetStatus("Minecraft controleren...");
+            await minecraftLauncher.InstallAsync(MinecraftVersion);
 
             var fabricProfile = $"fabric-loader-{FabricVersion}-{MinecraftVersion}";
             SetStatus("Minecraft starten...");
-            var process = await launcher.InstallAndBuildProcessAsync(fabricProfile, new MLaunchOption
+            var process = await minecraftLauncher.InstallAndBuildProcessAsync(fabricProfile, new MLaunchOption
             {
                 Session = session,
-                MaximumRamMb = MaximumRamMb
+                MaximumRamMb = MaximumRamMb,
+                GameLauncherName = "HVMC"
             });
 
             process.Start();
             SetStatus("Minecraft draait.");
-            _ = StartLeaseHeartbeatAsync(_clientId, _leaseId);
+            StartLeaseHeartbeat(_clientId, _leaseId);
             await process.WaitForExitAsync();
         }
         catch (Exception ex)
@@ -84,6 +75,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            _heartbeatCts?.Cancel();
             await ReleaseLeaseSafeAsync();
             PlayButton.IsEnabled = true;
             ExitButton.IsEnabled = true;
@@ -125,39 +117,40 @@ public partial class MainWindow : Window
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(GetError(json));
         return JsonSerializer.Deserialize<LeaseResponse>(json, JsonOptions)
-            ?? throw new InvalidOperationException("Ongeldige lease-response.");
+            ?? throw new InvalidOperationException("Ongeldige pool-response.");
     }
 
-    private JELoginHandler BuildLoginHandler()
+    private void StartLeaseHeartbeat(string clientId, string leaseId)
     {
-        var loggerFactory = LoggerFactory.Create(config => config.ClearProviders());
-        return new JELoginHandlerBuilder()
-            .WithLogger(loggerFactory.CreateLogger("HVMC"))
-            .Build();
-    }
-
-    private static JEGameAccount? FindLocalAccount(JELoginHandler handler, string? username)
-    {
-        if (string.IsNullOrWhiteSpace(username)) return null;
-        var wanted = username.Trim();
-        foreach (var item in handler.AccountManager.GetAccounts())
+        _heartbeatCts?.Cancel();
+        _heartbeatCts = new CancellationTokenSource();
+        _ = Task.Run(async () =>
         {
-            if (item is JEGameAccount je &&
-                string.Equals(je.Profile?.Username, wanted, StringComparison.OrdinalIgnoreCase))
-                return je;
-        }
-        return null;
+            while (!_heartbeatCts.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(5), _heartbeatCts.Token);
+                    if (_heartbeatCts.IsCancellationRequested) break;
+                    using var content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
+                    await _http.PostAsync($"{PoolApi}/v1/launcher/lease/heartbeat", content, _heartbeatCts.Token);
+                }
+                catch (OperationCanceledException) { break; }
+                catch { }
+            }
+        }, _heartbeatCts.Token);
     }
 
-    private static async Task<MSession> AuthenticateSilentlyAsync(JELoginHandler handler, JEGameAccount account)
+    private async Task ReleaseLeaseSafeAsync()
     {
-        var loggerFactory = LoggerFactory.Create(config => config.ClearProviders());
-        var msal = await MsalClientHelper.BuildApplicationWithCache(MicrosoftClientId);
-        var authenticator = handler.CreateAuthenticator(account, default);
-        authenticator.AddMsalOAuth(msal, oauth => oauth.Silent());
-        authenticator.AddXboxAuthForJE(xbox => xbox.Basic());
-        authenticator.AddJEAuthenticator();
-        return await authenticator.ExecuteForLauncherAsync();
+        if (string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_leaseId)) return;
+        try
+        {
+            using var content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, leaseId = _leaseId }), Encoding.UTF8, "application/json");
+            await _http.PostAsync($"{PoolApi}/v1/launcher/lease/release", content);
+        }
+        catch { }
+        finally { _leaseId = null; }
     }
 
     private string GetStableClientId()
@@ -173,42 +166,26 @@ public partial class MainWindow : Window
         return created;
     }
 
-    private async Task StartLeaseHeartbeatAsync(string clientId, string leaseId)
-    {
-        try
-        {
-            while (_leaseId == leaseId)
-            {
-                await Task.Delay(TimeSpan.FromMinutes(5));
-                if (_leaseId != leaseId) break;
-                using var content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
-                await _http.PostAsync($"{PoolApi}/v1/launcher/lease/heartbeat", content);
-            }
-        }
-        catch { }
-    }
-
-    private async Task ReleaseLeaseSafeAsync()
-    {
-        if (string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_leaseId)) return;
-        try
-        {
-            using var content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, leaseId = _leaseId }), Encoding.UTF8, "application/json");
-            await _http.PostAsync($"{PoolApi}/v1/launcher/lease/release", content);
-        }
-        catch { }
-        finally { _leaseId = null; }
-    }
-
     private void SetStatus(string message) => StatusText.Text = message;
 
     private static string GetError(string json)
     {
         try { return JsonSerializer.Deserialize<ApiError>(json, JsonOptions)?.Error ?? json; }
-        catch { return json; }
+        catch { return string.IsNullOrWhiteSpace(json) ? "Onbekende fout." : json; }
     }
 
-    private sealed record LeaseResponse(string LeaseId, string Slot, string AccountName, string? MicrosoftUsername, string ExpiresAt);
+    private sealed record LeaseResponse(
+        string LeaseId,
+        string AccountId,
+        string AccountName,
+        string? MicrosoftUsername,
+        string Username,
+        string Uuid,
+        string MinecraftAccessToken,
+        int ExpiresIn,
+        string ExpiresAt,
+        string? Xuid
+    );
     private sealed record ApiError(string Error);
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 }
