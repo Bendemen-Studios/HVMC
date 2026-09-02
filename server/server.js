@@ -1,6 +1,8 @@
 import express from 'express';
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 const PORT = Number(process.env.PORT || 8080);
@@ -14,6 +16,11 @@ if (!ADMIN_TOKEN) throw new Error('ADMIN_TOKEN is required');
 
 const app = express();
 app.use(express.json({ limit: '32kb' }));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -48,12 +55,7 @@ async function verifyMicrosoftIdToken(req) {
   if (!auth.startsWith('Bearer ')) throw Object.assign(new Error('Missing bearer token'), { status: 401 });
   const token = auth.slice(7).trim();
   if (!token) throw Object.assign(new Error('Missing bearer token'), { status: 401 });
-
-  const { payload } = await jwtVerify(token, jwks, {
-    audience: MICROSOFT_CLIENT_ID,
-    algorithms: ['RS256']
-  });
-
+  const { payload } = await jwtVerify(token, jwks, { audience: MICROSOFT_CLIENT_ID, algorithms: ['RS256'] });
   const oid = String(payload.oid || payload.sub || '');
   if (!oid) throw Object.assign(new Error('Token has no account identifier'), { status: 401 });
   return { oid, name: String(payload.name || ''), preferredUsername: String(payload.preferred_username || '') };
@@ -63,9 +65,7 @@ function cleanupExpired() {
   db.prepare('DELETE FROM leases WHERE expires_at <= ?').run(new Date().toISOString());
 }
 
-function isAdmin(req) {
-  return String(req.headers['x-admin-token'] || '') === ADMIN_TOKEN;
-}
+function isAdmin(req) { return String(req.headers['x-admin-token'] || '') === ADMIN_TOKEN; }
 
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'hvmc-account-pool' }));
 
@@ -78,9 +78,8 @@ app.post('/v1/lease/acquire', async (req, res) => {
 
     const mapped = db.prepare('SELECT * FROM accounts WHERE microsoft_oid = ? AND enabled = 1').get(identity.oid);
     let account = mapped;
-
     if (!account) {
-      account = db.prepare(`SELECT * FROM accounts WHERE enabled = 1 AND microsoft_oid IS NULL ORDER BY id LIMIT 1`).get();
+      account = db.prepare('SELECT * FROM accounts WHERE enabled = 1 AND microsoft_oid IS NULL ORDER BY id LIMIT 1').get();
       if (!account) return res.status(409).json({ error: 'No unassigned HVMC accounts available' });
       db.prepare('UPDATE accounts SET microsoft_oid = ? WHERE id = ?').run(identity.oid, account.id);
       account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(account.id);
@@ -92,13 +91,11 @@ app.post('/v1/lease/acquire', async (req, res) => {
     const now = new Date();
     const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
     const leaseId = crypto.randomUUID();
-    db.prepare(`INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)`)
+    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)')
       .run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
 
     res.json({ leaseId, accountId: account.slot, accountName: account.label, expiresAt: expires.toISOString() });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message || 'internal error' });
-  }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
 
 app.post('/v1/lease/heartbeat', async (req, res) => {
@@ -107,33 +104,31 @@ app.post('/v1/lease/heartbeat', async (req, res) => {
     const identity = await verifyMicrosoftIdToken(req);
     const leaseId = String(req.body?.leaseId || '');
     if (!leaseId) return res.status(400).json({ error: 'leaseId is required' });
-    const lease = db.prepare(`SELECT leases.*, accounts.microsoft_oid FROM leases JOIN accounts ON accounts.id = leases.account_id WHERE leases.id = ?`).get(leaseId);
+    const lease = db.prepare('SELECT leases.*, accounts.microsoft_oid FROM leases JOIN accounts ON accounts.id = leases.account_id WHERE leases.id = ?').get(leaseId);
     if (!lease || lease.microsoft_oid !== identity.oid) return res.status(404).json({ error: 'lease not found' });
     const expires = new Date(Date.now() + DEFAULT_LEASE_SECONDS * 1000).toISOString();
     db.prepare('UPDATE leases SET heartbeat_at = ?, expires_at = ? WHERE id = ?').run(new Date().toISOString(), expires, leaseId);
     res.json({ ok: true, expiresAt: expires });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message || 'internal error' });
-  }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
 
 app.post('/v1/lease/release', async (req, res) => {
   try {
     const identity = await verifyMicrosoftIdToken(req);
     const leaseId = String(req.body?.leaseId || '');
-    const lease = db.prepare(`SELECT leases.*, accounts.microsoft_oid FROM leases JOIN accounts ON accounts.id = leases.account_id WHERE leases.id = ?`).get(leaseId);
+    const lease = db.prepare('SELECT leases.*, accounts.microsoft_oid FROM leases JOIN accounts ON accounts.id = leases.account_id WHERE leases.id = ?').get(leaseId);
     if (!lease || lease.microsoft_oid !== identity.oid) return res.status(404).json({ error: 'lease not found' });
     db.prepare('DELETE FROM leases WHERE id = ?').run(leaseId);
     res.json({ ok: true });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message || 'internal error' });
-  }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
 
 app.get('/v1/status', (req, res) => {
   if (!isAdmin(req)) return res.status(403).json({ error: 'forbidden' });
   cleanupExpired();
-  const rows = db.prepare(`SELECT accounts.slot,accounts.label,accounts.enabled,CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
+  const rows = db.prepare(`SELECT accounts.slot,accounts.label,accounts.enabled,accounts.microsoft_oid,
+    CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at
+    FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
   res.json({ accounts: rows });
 });
 
