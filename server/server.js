@@ -53,11 +53,25 @@ CREATE TABLE IF NOT EXISTS leases (
 );
 CREATE INDEX IF NOT EXISTS idx_leases_account ON leases(account_id);
 CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases(expires_at);
+CREATE TABLE IF NOT EXISTS pool_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
 
-const insertSlot = db.prepare('INSERT OR IGNORE INTO accounts (slot,label,created_at) VALUES (?,?,?)');
-for (let i = 1; i <= 5; i++) insertSlot.run(`account-${String(i).padStart(2, '0')}`, `HVMC Account ${i}`, new Date().toISOString());
+// Initialize default accounts only once. After initialization, the admin owns the pool size.
+const initialized = db.prepare("SELECT value FROM pool_meta WHERE key = 'initialized'").get();
+if (!initialized) {
+  const existingCount = Number(db.prepare('SELECT COUNT(*) AS count FROM accounts').get().count);
+  if (existingCount === 0) {
+    const insertSlot = db.prepare('INSERT OR IGNORE INTO accounts (slot,label,created_at) VALUES (?,?,?)');
+    for (let i = 1; i <= 5; i++) {
+      insertSlot.run(`account-${String(i).padStart(2, '0')}`, `HVMC Account ${i}`, new Date().toISOString());
+    }
+  }
+  db.prepare("INSERT OR REPLACE INTO pool_meta (key,value) VALUES ('initialized','1')").run();
+}
 
 const sessions = new Map();
 const loginAttempts = new Map();
@@ -121,6 +135,7 @@ async function verifyMicrosoftIdToken(req) {
   const auth = String(req.headers.authorization || '');
   if (!auth.startsWith('Bearer ')) throw Object.assign(new Error('Missing bearer token'), { status: 401 });
   const token = auth.slice(7).trim();
+  if (!token) throw Object.assign(new Error('Missing bearer token'), { status: 401 });
   const jwks = createRemoteJWKSet(new URL(`${MS_AUTHORITY}/discovery/v2.0/keys`));
   const { payload } = await jwtVerify(token, jwks, { audience: MICROSOFT_CLIENT_ID, algorithms: ['RS256'] });
   const oid = String(payload.oid || payload.sub || '');
@@ -219,60 +234,6 @@ app.get('/v1/admin/me', (req, res) => {
   res.json({ authenticated: true, username: ADMIN_USERNAME });
 });
 
-app.get('/v1/status', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  cleanupExpired();
-  const rows = db.prepare(`SELECT accounts.id,accounts.slot,accounts.label,accounts.enabled,accounts.microsoft_oid,accounts.microsoft_username,
-    CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at
-    FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
-  res.json({ accounts: rows });
-});
-
-app.post('/v1/admin/accounts', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const label = String(req.body?.label || '').trim().slice(0, 100);
-  const requestedSlot = String(req.body?.slot || '').trim().slice(0, 100);
-  if (!label) return res.status(400).json({ error: 'Accountnaam is verplicht.' });
-  const nextNumber = Number(db.prepare('SELECT COALESCE(MAX(id),0)+1 AS n FROM accounts').get().n);
-  const slot = requestedSlot || `account-${String(nextNumber).padStart(2, '0')}`;
-  try {
-    const info = db.prepare('INSERT INTO accounts (slot,label,enabled,created_at) VALUES (?,?,1,?)').run(slot, label, new Date().toISOString());
-    res.json({ ok: true, id: Number(info.lastInsertRowid), slot, label });
-  } catch (err) {
-    res.status(409).json({ error: `Account kon niet worden toegevoegd: ${err.message}` });
-  }
-});
-
-app.patch('/v1/admin/accounts/:id', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const id = Number(req.params.id);
-  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
-  if (!account) return res.status(404).json({ error: 'Account niet gevonden.' });
-  const label = req.body?.label === undefined ? account.label : String(req.body.label).trim().slice(0, 100);
-  const enabled = req.body?.enabled === undefined ? account.enabled : (req.body.enabled ? 1 : 0);
-  if (!label) return res.status(400).json({ error: 'Accountnaam kan niet leeg zijn.' });
-  db.prepare('UPDATE accounts SET label = ?, enabled = ? WHERE id = ?').run(label, enabled, id);
-  res.json({ ok: true });
-});
-
-app.delete('/v1/admin/accounts/:id', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const id = Number(req.params.id);
-  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
-  if (!account) return res.status(404).json({ error: 'Account niet gevonden.' });
-  if (db.prepare('SELECT 1 FROM leases WHERE account_id = ?').get(id)) return res.status(409).json({ error: 'Account is momenteel bezet.' });
-  db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
-  res.json({ ok: true });
-});
-
-app.post('/v1/admin/accounts/:id/unlink', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const id = Number(req.params.id);
-  const info = db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL WHERE id = ?').run(id);
-  if (!info.changes) return res.status(404).json({ error: 'Account niet gevonden.' });
-  res.json({ ok: true });
-});
-
 app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const id = Number(req.params.id);
@@ -339,6 +300,60 @@ app.post('/v1/admin/accounts/:id/link/poll', async (req, res) => {
     linkAttempts.delete(attemptId);
     res.status(502).json({ state: 'error', error: err.message || 'Microsoft-koppeling mislukt.' });
   }
+});
+
+app.get('/v1/status', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  cleanupExpired();
+  const rows = db.prepare(`SELECT accounts.id,accounts.slot,accounts.label,accounts.enabled,accounts.microsoft_oid,accounts.microsoft_username,
+    CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at
+    FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
+  res.json({ accounts: rows });
+});
+
+app.post('/v1/admin/accounts', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const label = String(req.body?.label || '').trim().slice(0, 100);
+  const requestedSlot = String(req.body?.slot || '').trim().slice(0, 100);
+  if (!label) return res.status(400).json({ error: 'Accountnaam is verplicht.' });
+  const nextNumber = Number(db.prepare('SELECT COALESCE(MAX(id),0)+1 AS n FROM accounts').get().n);
+  const slot = requestedSlot || `account-${String(nextNumber).padStart(2, '0')}`;
+  try {
+    const info = db.prepare('INSERT INTO accounts (slot,label,enabled,created_at) VALUES (?,?,1,?)').run(slot, label, new Date().toISOString());
+    res.json({ ok: true, id: Number(info.lastInsertRowid), slot, label });
+  } catch (err) {
+    res.status(409).json({ error: `Account kon niet worden toegevoegd: ${err.message}` });
+  }
+});
+
+app.patch('/v1/admin/accounts/:id', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const id = Number(req.params.id);
+  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+  if (!account) return res.status(404).json({ error: 'Account niet gevonden.' });
+  const label = req.body?.label === undefined ? account.label : String(req.body.label).trim().slice(0, 100);
+  const enabled = req.body?.enabled === undefined ? account.enabled : (req.body.enabled ? 1 : 0);
+  if (!label) return res.status(400).json({ error: 'Accountnaam kan niet leeg zijn.' });
+  db.prepare('UPDATE accounts SET label = ?, enabled = ? WHERE id = ?').run(label, enabled, id);
+  res.json({ ok: true });
+});
+
+app.delete('/v1/admin/accounts/:id', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const id = Number(req.params.id);
+  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+  if (!account) return res.status(404).json({ error: 'Account niet gevonden.' });
+  if (db.prepare('SELECT 1 FROM leases WHERE account_id = ?').get(id)) return res.status(409).json({ error: 'Account is momenteel bezet.' });
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+  res.json({ ok: true });
+});
+
+app.post('/v1/admin/accounts/:id/unlink', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const id = Number(req.params.id);
+  const info = db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL WHERE id = ?').run(id);
+  if (!info.changes) return res.status(404).json({ error: 'Account niet gevonden.' });
+  res.json({ ok: true });
 });
 
 app.post('/v1/lease/acquire', async (req, res) => {
