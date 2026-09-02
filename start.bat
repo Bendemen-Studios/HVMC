@@ -2,27 +2,29 @@
 setlocal
 cd /d "%~dp0"
 
-title HVMC Bootstrapper
+title HVMC - Hero's Vault Minecraft
+color 0F
 
 echo.
-echo ==========================================
-echo          HVMC Bootstrapper
- echo ==========================================
+echo ==================================================
+echo              HVMC - HERO'S VAULT
+echo ==================================================
 echo.
-echo Start.bat blijft open zodat je de voortgang kunt zien.
+echo [HVMC] Bootstrapper starten...
+echo [HVMC] Je kunt in dit venster de voortgang volgen.
 echo.
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0HVBootstrapper.ps1"
 set "EXITCODE=%ERRORLEVEL%"
 
 echo.
-echo ==========================================
+echo ==================================================
 if "%EXITCODE%"=="0" (
-    echo HVMC bootstrapper is klaar.
+    echo [HVMC] Bootstrapper voltooid.
 ) else (
-    echo HVMC bootstrapper is gestopt met foutcode %EXITCODE%.
+    echo [HVMC] Bootstrapper gestopt met foutcode %EXITCODE%.
 )
-echo ==========================================
+echo ==================================================
 echo.
 pause
 exit /b %EXITCODE%
