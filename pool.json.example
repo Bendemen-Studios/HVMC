@@ -1,5 +1,7 @@
 {
   "enabled": false,
-  "url": "https://YOUR-HVMC-VPS.example.com",
-  "autoSelect": true
+  "url": "https://accounts.hvmc.nl",
+  "autoSelect": true,
+  "requireOAuth": true,
+  "leaseSeconds": 3600
 }
