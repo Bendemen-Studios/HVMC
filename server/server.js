@@ -26,9 +26,19 @@ const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || '');
 const DEFAULT_LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 3600);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/common';
 const MS_SCOPE = 'openid profile offline_access https://graph.microsoft.com/User.Read';
+const POOL_ENCRYPTION_KEY_B64 = String(process.env.POOL_ENCRYPTION_KEY || '');
 
 if (!MICROSOFT_CLIENT_ID) throw new Error('MICROSOFT_CLIENT_ID is required');
 if (!ADMIN_PASSWORD_HASH) throw new Error('ADMIN_PASSWORD_HASH is required');
+if (!POOL_ENCRYPTION_KEY_B64) throw new Error('POOL_ENCRYPTION_KEY is required');
+
+let poolKey;
+try {
+  poolKey = Buffer.from(POOL_ENCRYPTION_KEY_B64, 'base64');
+  if (poolKey.length !== 32) throw new Error('must decode to exactly 32 bytes');
+} catch (err) {
+  throw new Error(`POOL_ENCRYPTION_KEY invalid: ${err.message}`);
+}
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -40,6 +50,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   label TEXT NOT NULL,
   microsoft_oid TEXT UNIQUE,
   microsoft_username TEXT,
+  microsoft_refresh_token_enc TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
@@ -59,6 +70,7 @@ CREATE TABLE IF NOT EXISTS pool_meta (
 );
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
+try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_refresh_token_enc TEXT'); } catch {}
 
 const initialized = db.prepare("SELECT value FROM pool_meta WHERE key = 'initialized'").get();
 if (!initialized) {
@@ -75,15 +87,18 @@ if (!initialized) {
 const sessions = new Map();
 const loginAttempts = new Map();
 const linkAttempts = new Map();
+const launcherRate = new Map();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 10;
+const LAUNCHER_WINDOW_MS = 60 * 1000;
+const MAX_LAUNCHER_ATTEMPTS = 30;
 
 function cleanupExpired() {
   const now = new Date().toISOString();
   db.prepare('DELETE FROM leases WHERE expires_at <= ?').run(now);
+  for (const [ip, info] of launcherRate) if (info.resetAt <= Date.now()) launcherRate.delete(ip);
 }
-
 function cleanupState() {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
@@ -98,7 +113,6 @@ function safeEqual(a, b) {
   const bb = Buffer.from(String(b));
   return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
 }
-
 function verifyPassword(password) {
   const parts = ADMIN_PASSWORD_HASH.split('$');
   if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
@@ -114,11 +128,9 @@ function verifyPassword(password) {
     return safeEqual(actual, expected);
   } catch { return false; }
 }
-
 function getSessionToken(req) {
   return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
 }
-
 function isAdmin(req) {
   const legacy = String(req.headers['x-admin-token'] || '');
   if (ADMIN_TOKEN && safeEqual(legacy, ADMIN_TOKEN)) return true;
@@ -127,7 +139,6 @@ function isAdmin(req) {
   if (!session || session.expiresAt <= Date.now()) return false;
   return session.role === 'admin';
 }
-
 function requireAdmin(req, res) {
   if (!isAdmin(req)) {
     res.status(401).json({ error: 'unauthorized' });
@@ -135,43 +146,43 @@ function requireAdmin(req, res) {
   }
   return true;
 }
-
+function encryptSecret(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', poolKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return [iv, tag, ciphertext].map(x => x.toString('base64url')).join('.');
+}
+function decryptSecret(payload) {
+  const [ivText, tagText, dataText] = String(payload || '').split('.');
+  if (!ivText || !tagText || !dataText) throw new Error('Invalid encrypted credential');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', poolKey, Buffer.from(ivText, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(dataText, 'base64url')), decipher.final()]).toString('utf8');
+}
 async function verifyMicrosoftIdToken(req) {
   const auth = String(req.headers.authorization || '');
   if (!auth.startsWith('Bearer ')) throw Object.assign(new Error('Missing bearer token'), { status: 401 });
   const token = auth.slice(7).trim();
-  if (!token) throw Object.assign(new Error('Missing bearer token'), { status: 401 });
   const jwks = createRemoteJWKSet(new URL(`${MS_AUTHORITY}/discovery/v2.0/keys`));
   const { payload } = await jwtVerify(token, jwks, { audience: MICROSOFT_CLIENT_ID, algorithms: ['RS256'] });
   const oid = String(payload.oid || payload.sub || '');
   if (!oid) throw Object.assign(new Error('Token has no account identifier'), { status: 401 });
-  return {
-    oid,
-    name: String(payload.name || ''),
-    preferredUsername: String(payload.preferred_username || payload.email || '')
-  };
+  return { oid, name: String(payload.name || ''), preferredUsername: String(payload.preferred_username || payload.email || '') };
 }
-
 async function microsoftDeviceStart() {
   const response = await fetch(`${MS_AUTHORITY}/oauth2/v2.0/devicecode`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: MICROSOFT_CLIENT_ID, scope: MS_SCOPE })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error_description || data.error || 'Microsoft device login could not be started');
   return data;
 }
-
 async function microsoftDevicePoll(deviceCode) {
   const response = await fetch(`${MS_AUTHORITY}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: MICROSOFT_CLIENT_ID,
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-      device_code: deviceCode
-    })
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: MICROSOFT_CLIENT_ID, grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: deviceCode })
   });
   const data = await response.json();
   if (response.ok) return { state: 'complete', data };
@@ -181,34 +192,69 @@ async function microsoftDevicePoll(deviceCode) {
   if (data.error === 'authorization_declined') return { state: 'declined' };
   return { state: 'error', message: data.error_description || data.error || 'Microsoft authentication failed' };
 }
-
 async function profileFromAccessToken(accessToken, idToken) {
   try {
-    const response = await fetch('https://graph.microsoft.com/v1.0/me?$select=id,displayName,userPrincipalName,mail', {
-      headers: { Authorization: `Bearer ${accessToken}` }
-    });
+    const response = await fetch('https://graph.microsoft.com/v1.0/me?$select=id,displayName,userPrincipalName,mail', { headers: { Authorization: `Bearer ${accessToken}` } });
     if (response.ok) return await response.json();
   } catch {}
   if (idToken) {
-    const part = String(idToken).split('.')[1]?.replace(/-/g, '+').replace(/_/g, '/');
-    if (part) {
-      try {
-        const padded = part + '='.repeat((4 - (part.length % 4)) % 4);
-        const payload = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
-        return {
-          id: payload.oid || payload.sub,
-          displayName: payload.name || '',
-          userPrincipalName: payload.preferred_username || '',
-          mail: payload.email || ''
-        };
-      } catch {}
-    }
+    try {
+      const part = String(idToken).split('.')[1]?.replace(/-/g, '+').replace(/_/g, '/');
+      if (!part) return null;
+      const padded = part + '='.repeat((4 - (part.length % 4)) % 4);
+      const payload = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+      return { id: payload.oid || payload.sub, displayName: payload.name || '', userPrincipalName: payload.preferred_username || '', mail: payload.email || '' };
+    } catch {}
   }
   return null;
 }
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'hvmc-account-pool' }));
+async function refreshMicrosoftAccessToken(refreshToken) {
+  const response = await fetch(`${MS_AUTHORITY}/oauth2/v2.0/token`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: MICROSOFT_CLIENT_ID, grant_type: 'refresh_token', refresh_token: refreshToken, scope: MS_SCOPE })
+  });
+  const data = await response.json();
+  if (!response.ok || !data.access_token) throw new Error(data.error_description || data.error || 'Microsoft refresh failed');
+  return data;
+}
+async function minecraftSessionFromMicrosoftAccessToken(accessToken) {
+  const xbl = await fetch('https://user.auth.xboxlive.com/user/authenticate', {
+    method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${accessToken}` }, RelyingParty: 'http://auth.xboxlive.com', TokenType: 'JWT' })
+  });
+  const xblData = await xbl.json();
+  if (!xbl.ok || !xblData.Token) throw new Error(xblData.XErr ? `Xbox Live authentication failed (${xblData.XErr})` : 'Xbox Live authentication failed');
+  const userHash = xblData.DisplayClaims?.xui?.[0]?.uhs;
+  if (!userHash) throw new Error('Xbox Live user hash missing');
+  const xsts = await fetch('https://xsts.auth.xboxlive.com/xsts/authorize', {
+    method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ Properties: { SandboxId: 'RETAIL', UserTokens: [xblData.Token] }, RelyingParty: 'rp://api.minecraftservices.com/', TokenType: 'JWT' })
+  });
+  const xstsData = await xsts.json();
+  if (!xsts.ok || !xstsData.Token) throw new Error(xstsData.XErr ? `Xbox XSTS authentication failed (${xstsData.XErr})` : 'Xbox XSTS authentication failed');
+  const mc = await fetch('https://api.minecraftservices.com/authentication/login_with_xbox', {
+    method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsData.Token}`, ensureLegacyEnabled: true })
+  });
+  const mcData = await mc.json();
+  if (!mc.ok || !mcData.access_token) throw new Error(mcData.errorMessage || mcData.error || 'Minecraft authentication failed');
+  const profileResponse = await fetch('https://api.minecraftservices.com/minecraft/profile', { headers: { Authorization: `Bearer ${mcData.access_token}` } });
+  const profile = await profileResponse.json();
+  if (!profileResponse.ok || !profile.id || !profile.name) throw new Error(profile.errorMessage || profile.error || 'Minecraft Java profile not found');
+  return { accessToken: mcData.access_token, username: profile.name, uuid: profile.id, expiresIn: Number(mcData.expires_in || 86400) };
+}
+function launcherRateLimit(req, res) {
+  const ip = String(req.ip || req.socket.remoteAddress || 'unknown');
+  const entry = launcherRate.get(ip) || { count: 0, resetAt: Date.now() + LAUNCHER_WINDOW_MS };
+  if (entry.resetAt <= Date.now()) { entry.count = 0; entry.resetAt = Date.now() + LAUNCHER_WINDOW_MS; }
+  entry.count += 1;
+  launcherRate.set(ip, entry);
+  if (entry.count > MAX_LAUNCHER_ATTEMPTS) { res.status(429).json({ error: 'Te veel launcher-aanvragen. Probeer later opnieuw.' }); return false; }
+  return true;
+}
 
+app.get('/health', (_req, res) => res.json({ ok: true, service: 'hvmc-account-pool' }));
 app.post('/v1/admin/login', (req, res) => {
   cleanupState();
   const ip = String(req.ip || req.socket.remoteAddress || 'unknown');
@@ -217,27 +263,14 @@ app.post('/v1/admin/login', (req, res) => {
   if (attempt.count >= MAX_LOGIN_ATTEMPTS) return res.status(429).json({ error: 'Te veel pogingen. Probeer later opnieuw.' });
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
-  if (!safeEqual(username, ADMIN_USERNAME) || !verifyPassword(password)) {
-    attempt.count += 1;
-    loginAttempts.set(ip, attempt);
-    return res.status(401).json({ error: 'Ongeldige gebruikersnaam of wachtwoord.' });
-  }
+  if (!safeEqual(username, ADMIN_USERNAME) || !verifyPassword(password)) { attempt.count += 1; loginAttempts.set(ip, attempt); return res.status(401).json({ error: 'Ongeldige gebruikersnaam of wachtwoord.' }); }
   loginAttempts.delete(ip);
   const token = crypto.randomBytes(32).toString('base64url');
   sessions.set(token, { role: 'admin', username: ADMIN_USERNAME, expiresAt: Date.now() + SESSION_TTL_MS });
   res.json({ ok: true, token, expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() });
 });
-
-app.post('/v1/admin/logout', (req, res) => {
-  const token = getSessionToken(req);
-  if (token) sessions.delete(token);
-  res.json({ ok: true });
-});
-
-app.get('/v1/admin/me', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  res.json({ authenticated: true, username: ADMIN_USERNAME });
-});
+app.post('/v1/admin/logout', (req, res) => { const token = getSessionToken(req); if (token) sessions.delete(token); res.json({ ok: true }); });
+app.get('/v1/admin/me', (req, res) => { if (!requireAdmin(req, res)) return; res.json({ authenticated: true, username: ADMIN_USERNAME }); });
 
 app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
   if (!requireAdmin(req, res)) return;
@@ -249,65 +282,46 @@ app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
   try {
     const device = await microsoftDeviceStart();
     const attemptId = crypto.randomUUID();
-    linkAttempts.set(attemptId, {
-      accountId: id,
-      deviceCode: String(device.device_code),
-      interval: Math.max(Number(device.interval || 5), 5),
-      nextPollAt: Date.now(),
-      expiresAt: Date.now() + Number(device.expires_in || 900) * 1000
-    });
+    linkAttempts.set(attemptId, { accountId: id, deviceCode: String(device.device_code), interval: Math.max(Number(device.interval || 5), 5), nextPollAt: Date.now(), expiresAt: Date.now() + Number(device.expires_in || 900) * 1000 });
     res.json({ ok: true, attemptId, verificationUri: device.verification_uri || device.verification_url || 'https://microsoft.com/devicelogin', userCode: device.user_code, message: device.message || 'Open Microsoft login and enter the code.', expiresIn: Number(device.expires_in || 900) });
-  } catch (err) {
-    res.status(502).json({ error: err.message || 'Microsoft-login kon niet worden gestart.' });
-  }
+  } catch (err) { res.status(502).json({ error: err.message || 'Microsoft-login kon niet worden gestart.' }); }
 });
-
 app.post('/v1/admin/accounts/:id/link/poll', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const id = Number(req.params.id);
   const attemptId = String(req.body?.attemptId || '');
   const attempt = linkAttempts.get(attemptId);
   if (!attempt || attempt.accountId !== id) return res.status(404).json({ error: 'Koppelingssessie niet gevonden of verlopen.' });
-  if (Date.now() >= attempt.expiresAt) {
-    linkAttempts.delete(attemptId);
-    return res.json({ state: 'expired' });
-  }
+  if (Date.now() >= attempt.expiresAt) { linkAttempts.delete(attemptId); return res.json({ state: 'expired' }); }
   if (Date.now() < attempt.nextPollAt) return res.json({ state: 'pending' });
   try {
     const result = await microsoftDevicePoll(attempt.deviceCode);
     attempt.nextPollAt = Date.now() + attempt.interval * 1000;
     if (result.state === 'pending') return res.json({ state: 'pending' });
     if (result.state === 'slow_down') { attempt.interval += 5; return res.json({ state: 'pending' }); }
-    if (result.state !== 'complete') {
-      linkAttempts.delete(attemptId);
-      return res.json({ state: result.state, error: result.message });
-    }
+    if (result.state !== 'complete') { linkAttempts.delete(attemptId); return res.json({ state: result.state, error: result.message }); }
     const profile = await profileFromAccessToken(result.data.access_token, result.data.id_token);
     const oid = String(profile?.id || '');
     if (!oid) throw new Error('Microsoft-account kon niet worden geïdentificeerd.');
     const username = String(profile.userPrincipalName || profile.mail || '');
     const owner = db.prepare('SELECT id,label FROM accounts WHERE microsoft_oid = ? AND id <> ?').get(oid, id);
-    if (owner) {
-      linkAttempts.delete(attemptId);
-      return res.status(409).json({ state: 'conflict', error: `Dit Microsoft-account is al gekoppeld aan ${owner.label}.` });
-    }
-    db.prepare('UPDATE accounts SET microsoft_oid = ?, microsoft_username = ? WHERE id = ?').run(oid, username || null, id);
+    if (owner) { linkAttempts.delete(attemptId); return res.status(409).json({ state: 'conflict', error: `Dit Microsoft-account is al gekoppeld aan ${owner.label}.` }); }
+    const refreshToken = String(result.data.refresh_token || '');
+    if (!refreshToken) throw new Error('Microsoft gaf geen refresh-token terug; controleer of offline_access is toegestaan.');
+    db.prepare('UPDATE accounts SET microsoft_oid = ?, microsoft_username = ?, microsoft_refresh_token_enc = ? WHERE id = ?').run(oid, username || null, encryptSecret(refreshToken), id);
     linkAttempts.delete(attemptId);
     res.json({ state: 'complete', account: { id, microsoftOid: oid, microsoftUsername: username } });
-  } catch (err) {
-    linkAttempts.delete(attemptId);
-    res.status(502).json({ state: 'error', error: err.message || 'Microsoft-koppeling mislukt.' });
-  }
+  } catch (err) { linkAttempts.delete(attemptId); res.status(502).json({ state: 'error', error: err.message || 'Microsoft-koppeling mislukt.' }); }
 });
 
 app.get('/v1/status', (req, res) => {
   if (!requireAdmin(req, res)) return;
+  cleanupExpired();
   const rows = db.prepare(`SELECT accounts.id,accounts.slot,accounts.label,accounts.enabled,accounts.microsoft_oid,accounts.microsoft_username,
     CASE WHEN leases.id IS NULL THEN 0 ELSE 1 END AS busy,leases.client_id,leases.expires_at
     FROM accounts LEFT JOIN leases ON leases.account_id = accounts.id ORDER BY accounts.id`).all();
   res.json({ accounts: rows });
 });
-
 app.post('/v1/admin/accounts', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const label = String(req.body?.label || '').trim().slice(0, 100);
@@ -318,11 +332,8 @@ app.post('/v1/admin/accounts', (req, res) => {
   try {
     const info = db.prepare('INSERT INTO accounts (slot,label,enabled,created_at) VALUES (?,?,1,?)').run(slot, label, new Date().toISOString());
     res.json({ ok: true, id: Number(info.lastInsertRowid), slot, label });
-  } catch (err) {
-    res.status(409).json({ error: `Account kon niet worden toegevoegd: ${err.message}` });
-  }
+  } catch (err) { res.status(409).json({ error: `Account kon niet worden toegevoegd: ${err.message}` }); }
 });
-
 app.patch('/v1/admin/accounts/:id', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const id = Number(req.params.id);
@@ -334,7 +345,6 @@ app.patch('/v1/admin/accounts/:id', (req, res) => {
   db.prepare('UPDATE accounts SET label = ?, enabled = ? WHERE id = ?').run(label, enabled, id);
   res.json({ ok: true });
 });
-
 app.delete('/v1/admin/accounts/:id', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const id = Number(req.params.id);
@@ -344,60 +354,89 @@ app.delete('/v1/admin/accounts/:id', (req, res) => {
   db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
   res.json({ ok: true });
 });
-
 app.post('/v1/admin/accounts/:id/unlink', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const id = Number(req.params.id);
-  const info = db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL WHERE id = ?').run(id);
+  const info = db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL, microsoft_refresh_token_enc = NULL WHERE id = ?').run(id);
   if (!info.changes) return res.status(404).json({ error: 'Account niet gevonden.' });
   res.json({ ok: true });
 });
 
-// Public launcher pool API. It only returns a slot/lease; Microsoft credentials never leave the server here.
-app.post('/v1/launcher/lease/acquire', (req, res) => {
+// New launcher API: no Microsoft login on the youth PC. The server picks the first free linked account,
+// refreshes Microsoft silently, converts it through Xbox Live/XSTS/Minecraft Services, and returns only
+// a short-lived Minecraft session token to the launcher.
+app.post('/v1/launcher/lease/acquire', async (req, res) => {
+  if (!launcherRateLimit(req, res)) return;
   cleanupExpired();
   const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
   if (!clientId) return res.status(400).json({ error: 'clientId is required' });
-  const tx = db.transaction(() => {
-    const existing = db.prepare('SELECT leases.*,accounts.slot,accounts.label,accounts.microsoft_username FROM leases JOIN accounts ON accounts.id=leases.account_id WHERE leases.client_id=? ORDER BY leases.acquired_at DESC LIMIT 1').get(clientId);
-    if (existing) return existing;
-    const account = db.prepare(`SELECT accounts.* FROM accounts
-      WHERE accounts.enabled = 1 AND accounts.microsoft_oid IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM leases WHERE leases.account_id = accounts.id)
-      ORDER BY accounts.id LIMIT 1`).get();
-    if (!account) return null;
-    const now = new Date();
-    const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
-    const leaseId = crypto.randomUUID();
-    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)')
-      .run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
-    return { id: leaseId, slot: account.slot, label: account.label, microsoftUsername: account.microsoft_username || '', expiresAt: expires.toISOString() };
-  });
-  const lease = tx();
-  if (!lease) return res.status(409).json({ error: 'Geen vrij gekoppeld Minecraft-account beschikbaar.' });
-  res.json({ ok: true, leaseId: lease.id, slot: lease.slot, accountName: lease.label, microsoftUsername: lease.microsoftUsername, expiresAt: lease.expiresAt });
+
+  let lease;
+  try {
+    lease = db.transaction(() => {
+      const account = db.prepare(`SELECT accounts.* FROM accounts
+        WHERE accounts.enabled = 1
+          AND accounts.microsoft_oid IS NOT NULL
+          AND accounts.microsoft_refresh_token_enc IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM leases WHERE leases.account_id = accounts.id)
+        ORDER BY accounts.id LIMIT 1`).get();
+      if (!account) throw Object.assign(new Error('Geen vrij gekoppeld Minecraft-account beschikbaar.'), { status: 409 });
+      const now = new Date();
+      const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
+      const leaseId = crypto.randomUUID();
+      db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)').run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
+      return { leaseId, accountId: account.id, slot: account.slot, accountName: account.label, microsoftUsername: account.microsoft_username, encryptedRefreshToken: account.microsoft_refresh_token_enc, expiresAt: expires.toISOString() };
+    })();
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: err.message || 'internal error' });
+  }
+
+  try {
+    const refreshToken = decryptSecret(lease.encryptedRefreshToken);
+    const token = await refreshMicrosoftAccessToken(refreshToken);
+    const minecraft = await minecraftSessionFromMicrosoftAccessToken(token.access_token);
+    // Microsoft may rotate the refresh token. Persist the replacement before returning the session.
+    if (token.refresh_token) db.prepare('UPDATE accounts SET microsoft_refresh_token_enc = ? WHERE id = ?').run(encryptSecret(token.refresh_token), lease.accountId);
+    res.json({
+      leaseId: lease.leaseId,
+      accountId: lease.slot,
+      accountName: lease.accountName,
+      microsoftUsername: lease.microsoftUsername,
+      username: minecraft.username,
+      uuid: minecraft.uuid,
+      minecraftAccessToken: minecraft.accessToken,
+      expiresIn: minecraft.expiresIn,
+      expiresAt: lease.expiresAt
+    });
+  } catch (err) {
+    db.prepare('DELETE FROM leases WHERE id = ?').run(lease.leaseId);
+    res.status(502).json({ error: err.message || 'Pool-account authenticatie mislukt.' });
+  }
 });
 
 app.post('/v1/launcher/lease/heartbeat', (req, res) => {
+  if (!launcherRateLimit(req, res)) return;
   cleanupExpired();
-  const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
-  const leaseId = String(req.body?.leaseId || '').trim();
-  if (!clientId || !leaseId) return res.status(400).json({ error: 'clientId and leaseId are required' });
-  const lease = db.prepare('SELECT * FROM leases WHERE id=? AND client_id=?').get(leaseId, clientId);
+  const leaseId = String(req.body?.leaseId || '');
+  const clientId = String(req.body?.clientId || '').slice(0, 200);
+  if (!leaseId || !clientId) return res.status(400).json({ error: 'leaseId and clientId are required' });
+  const lease = db.prepare('SELECT * FROM leases WHERE id = ? AND client_id = ?').get(leaseId, clientId);
   if (!lease) return res.status(404).json({ error: 'Lease niet gevonden.' });
   const expires = new Date(Date.now() + DEFAULT_LEASE_SECONDS * 1000).toISOString();
-  db.prepare('UPDATE leases SET heartbeat_at=?,expires_at=? WHERE id=?').run(new Date().toISOString(), expires, leaseId);
+  db.prepare('UPDATE leases SET heartbeat_at = ?, expires_at = ? WHERE id = ?').run(new Date().toISOString(), expires, leaseId);
   res.json({ ok: true, expiresAt: expires });
 });
-
 app.post('/v1/launcher/lease/release', (req, res) => {
-  const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
-  const leaseId = String(req.body?.leaseId || '').trim();
-  if (!clientId || !leaseId) return res.status(400).json({ error: 'clientId and leaseId are required' });
-  const info = db.prepare('DELETE FROM leases WHERE id=? AND client_id=?').run(leaseId, clientId);
-  res.json({ ok: true, released: info.changes > 0 });
+  if (!launcherRateLimit(req, res)) return;
+  const leaseId = String(req.body?.leaseId || '');
+  const clientId = String(req.body?.clientId || '').slice(0, 200);
+  if (!leaseId || !clientId) return res.status(400).json({ error: 'leaseId and clientId are required' });
+  const info = db.prepare('DELETE FROM leases WHERE id = ? AND client_id = ?').run(leaseId, clientId);
+  if (!info.changes) return res.status(404).json({ error: 'Lease niet gevonden.' });
+  res.json({ ok: true });
 });
 
+// Keep legacy client-authenticated lease endpoints for compatibility.
 app.post('/v1/lease/acquire', async (req, res) => {
   try {
     cleanupExpired();
@@ -408,51 +447,35 @@ app.post('/v1/lease/acquire', async (req, res) => {
     if (!account) return res.status(403).json({ error: 'Microsoft-account is niet gekoppeld aan een HVMC-pool-account.' });
     const active = db.prepare('SELECT * FROM leases WHERE account_id = ?').get(account.id);
     if (active) return res.status(409).json({ error: 'Account is al in gebruik.', accountName: account.label });
-    const now = new Date();
-    const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
-    const leaseId = crypto.randomUUID();
-    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)')
-      .run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
+    const now = new Date(); const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000); const leaseId = crypto.randomUUID();
+    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)').run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
     res.json({ leaseId, accountId: account.slot, accountName: account.label, expiresAt: expires.toISOString() });
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message || 'internal error' });
-  }
+  } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
-
 app.post('/v1/lease/heartbeat', async (req, res) => {
   try {
-    cleanupExpired();
-    const identity = await verifyMicrosoftIdToken(req);
-    const leaseId = String(req.body?.leaseId || '');
+    cleanupExpired(); const identity = await verifyMicrosoftIdToken(req); const leaseId = String(req.body?.leaseId || '');
     const lease = db.prepare('SELECT leases.*,accounts.microsoft_oid FROM leases JOIN accounts ON accounts.id=leases.account_id WHERE leases.id=?').get(leaseId);
     if (!lease || lease.microsoft_oid !== identity.oid) return res.status(404).json({ error: 'Lease niet gevonden.' });
     const expires = new Date(Date.now() + DEFAULT_LEASE_SECONDS * 1000).toISOString();
-    db.prepare('UPDATE leases SET heartbeat_at=?,expires_at=? WHERE id=?').run(new Date().toISOString(), expires, leaseId);
-    res.json({ ok: true, expiresAt: expires });
+    db.prepare('UPDATE leases SET heartbeat_at=?,expires_at=? WHERE id=?').run(new Date().toISOString(), expires, leaseId); res.json({ ok: true, expiresAt: expires });
   } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
-
 app.post('/v1/lease/release', async (req, res) => {
   try {
-    const identity = await verifyMicrosoftIdToken(req);
-    const leaseId = String(req.body?.leaseId || '');
+    const identity = await verifyMicrosoftIdToken(req); const leaseId = String(req.body?.leaseId || '');
     const lease = db.prepare('SELECT leases.*,accounts.microsoft_oid FROM leases JOIN accounts ON accounts.id=leases.account_id WHERE leases.id=?').get(leaseId);
     if (!lease || lease.microsoft_oid !== identity.oid) return res.status(404).json({ error: 'Lease niet gevonden.' });
-    db.prepare('DELETE FROM leases WHERE id=?').run(leaseId);
-    res.json({ ok: true });
+    db.prepare('DELETE FROM leases WHERE id=?').run(leaseId); res.json({ ok: true });
   } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
 
 app.post('/v1/admin/reset-mapping', (req, res) => {
   if (!requireAdmin(req, res)) return;
   db.prepare('DELETE FROM leases').run();
-  db.prepare('UPDATE accounts SET microsoft_oid=NULL,microsoft_username=NULL').run();
+  db.prepare('UPDATE accounts SET microsoft_oid=NULL,microsoft_username=NULL,microsoft_refresh_token_enc=NULL').run();
   res.json({ ok: true });
 });
 
-app.use((err, _req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ error: 'internal error' });
-});
-
+app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: 'internal error' }); });
 app.listen(PORT, '127.0.0.1', () => console.log(`HVMC account pool listening on 127.0.0.1:${PORT}`));
