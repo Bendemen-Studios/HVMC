@@ -18,7 +18,10 @@ $FabricLoader = '0.18.1'
 
 foreach ($dir in @($Root,$MinecraftDir,$MinecraftDir+'\mods',$MinecraftDir+'\config',$MinecraftDir+'\resourcepacks',$MinecraftDir+'\shaderpacks',$MinecraftDir+'\datapacks',$MinecraftDir+'\kubejs')) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 
-function Write-Log([string]$Message) { try { Add-Content -LiteralPath $LogPath -Value ("{0:u} {1}" -f (Get-Date),$Message) -Encoding UTF8 } catch {} }
+function Write-Log([string]$Message) { 
+    try { Add-Content -LiteralPath $LogPath -Value ("{0:u} {1}" -f (Get-Date),$Message) -Encoding UTF8 } catch {}
+    Write-Host "[HVMC] $Message"
+}
 function Get-GitHubFile([string]$Name) { Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/contents/$Name?ref=$Branch" -Headers @{'User-Agent'='HVMC-Bootstrapper'} -TimeoutSec 20 }
 function Download-File([string]$Url,[string]$Destination,[string]$ExpectedSha512='',[string]$ExpectedSha1='') {
     $parent=Split-Path -Parent $Destination; New-Item -ItemType Directory -Force -Path $parent | Out-Null; $tmp="$Destination.download"
@@ -81,17 +84,20 @@ function Test-OfficialLauncher {
     foreach($p in $paths){if($p -and (Test-Path $p)){return $p}};return $null
 }
 function Ensure-OfficialLauncher {
-    $launcher=Test-OfficialLauncher;if($launcher){return $launcher}
+    $launcher=Test-OfficialLauncher;if($launcher){Write-Log 'Official Minecraft Launcher gevonden.';return $launcher}
+    Write-Log 'Official Minecraft Launcher niet gevonden; installatie controleren...'
     $winget=Get-Command winget.exe -ErrorAction SilentlyContinue
-    if($winget){try{& $winget.Source install --id Mojang.MinecraftLauncher --exact --silent --accept-package-agreements --accept-source-agreements | Out-Null}catch{Write-Log "WinGet launcher install failed: $($_.Exception.Message)"};$launcher=Test-OfficialLauncher;if($launcher){return $launcher}}
+    if($winget){try{& $winget.Source install --id Mojang.MinecraftLauncher --exact --silent --accept-package-agreements --accept-source-agreements | Out-Null}catch{Write-Log "WinGet launcher install failed: $($_.Exception.Message)"};$launcher=Test-OfficialLauncher;if($launcher){Write-Log 'Official Minecraft Launcher geïnstalleerd.';return $launcher}}
     Start-Process 'https://www.minecraft.net/download';throw 'Official Minecraft Launcher is not installed. The official download page has been opened.'
 }
 function Ensure-Fabric {
-    $fabricVersion=Join-Path $MinecraftDir "versions\fabric-loader-$FabricLoader-$McVersion\fabric-loader-$FabricLoader-$McVersion.json";if(Test-Path $fabricVersion){return}
+    $fabricVersion=Join-Path $MinecraftDir "versions\fabric-loader-$FabricLoader-$McVersion\fabric-loader-$FabricLoader-$McVersion.json";if(Test-Path $fabricVersion){Write-Log "Fabric $FabricLoader voor Minecraft $McVersion gevonden.";return}
+    Write-Log "Fabric $FabricLoader installeren voor Minecraft $McVersion..."
     $meta=Invoke-RestMethod -Uri 'https://meta.fabricmc.net/v2/versions/installer' -Headers @{'User-Agent'='HVMC-Bootstrapper'} -TimeoutSec 30;$installer=$meta|Where-Object{$_.stable -eq $true -and $_.exe}|Select-Object -First 1
     if(-not $installer){throw 'Could not find a stable Fabric Windows installer.'};$installerPath=Join-Path $Root 'fabric-installer.exe';if(-not(Download-File ([string]$installer.exe) $installerPath)){throw 'Could not download Fabric installer.'}
     $p=Start-Process $installerPath -ArgumentList 'client','-dir',('"'+$MinecraftDir+'"'),'-mcversion',$McVersion,'-loader',$FabricLoader -Wait -PassThru
     if($p.ExitCode -ne 0 -or -not(Test-Path $fabricVersion)){throw 'Fabric installation failed.'}
+    Write-Log 'Fabric installatie voltooid.'
 }
 function Get-PoolConfig {
     $cfg=Read-JsonFile $PoolConfigPath
@@ -99,34 +105,40 @@ function Get-PoolConfig {
     return $cfg
 }
 function Ensure-OAuthProfile {
-    $cfg=Get-PoolConfig;if(-not $cfg.enabled -or -not $cfg.requireOAuth){return $null}
+    $cfg=Get-PoolConfig;if(-not $cfg.enabled -or -not $cfg.requireOAuth){Write-Log 'OAuth is uitgeschakeld.';return $null}
     $oauthScript=Join-Path $PSScriptRoot 'HVMCOAuth.ps1';if(-not(Test-Path $oauthScript)){throw 'HVMCOAuth.ps1 is missing.'}
-    $result=& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $oauthScript 2>&1
+    Write-Log 'Microsoft OAuth controleren...'
+    $result=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $oauthScript 2>&1
     if($LASTEXITCODE -ne 0){throw (($result|Out-String).Trim())}
+    Write-Log 'Microsoft OAuth gereed.'
     return Read-JsonFile $OAuthProfilePath
 }
 function Acquire-PoolLease($Profile) {
-    $cfg=Get-PoolConfig;if(-not $cfg.enabled -or [string]::IsNullOrWhiteSpace([string]$cfg.url)){return $null}
+    $cfg=Get-PoolConfig;if(-not $cfg.enabled -or [string]::IsNullOrWhiteSpace([string]$cfg.url)){Write-Log 'Accountpool is uitgeschakeld.';return $null}
     $idToken=Read-SecureStringFile $OAuthIdTokenPath
     if($cfg.requireOAuth -and -not $idToken){throw 'No Microsoft OAuth identity token is available.'}
     try {
+        Write-Log 'Accountpool lease aanvragen...'
         $headers=@{'Accept'='application/json'};if($idToken){$headers['Authorization']='Bearer '+$idToken}
         $body=@{clientId="$env:COMPUTERNAME-$env:USERNAME";accountId=if($Profile){[string]$Profile.id}else{''};product='HVMC';minecraftVersion=$McVersion}|ConvertTo-Json
-        return Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/acquire' -Method Post -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 10
+        $lease=Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/acquire' -Method Post -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 10
+        Write-Log "Accountpool lease verkregen: $($lease.accountName)"
+        return $lease
     }catch{Write-Log "Account pool unavailable: $($_.Exception.Message)";return $null}
 }
 
-Write-Log 'Bootstrapper started.'
+Write-Log 'Bootstrapper gestart.'
 try {
-    try{$remotePack=Get-GitHubFile 'HV.mrpack';$state=Read-JsonFile $StatePath;if(-not(Test-Path $PackPath)-or -not $state -or [string]$state.packSha -ne [string]$remotePack.sha){if(-not(Download-File $remotePack.download_url $PackPath)){throw 'Could not download HV.mrpack.'};Save-JsonFile ([pscustomobject]@{packSha=[string]$remotePack.sha}) $StatePath};$index=Sync-Mrpack $PackPath;Write-Log "Pack synchronized: $($index.name) $($index.versionId)"}catch{Write-Log "Pack synchronization failed: $($_.Exception.Message)"}
+    try{$remotePack=Get-GitHubFile 'HV.mrpack';$state=Read-JsonFile $StatePath;if(-not(Test-Path $PackPath)-or -not $state -or [string]$state.packSha -ne [string]$remotePack.sha){Write-Log 'Modpack-update gevonden; downloaden...';if(-not(Download-File $remotePack.download_url $PackPath)){throw 'Could not download HV.mrpack.'};Save-JsonFile ([pscustomobject]@{packSha=[string]$remotePack.sha}) $StatePath}else{Write-Log 'Modpack is up-to-date.'};$index=Sync-Mrpack $PackPath;Write-Log "Pack synchronized: $($index.name) $($index.versionId)"}catch{Write-Log "Pack synchronization failed: $($_.Exception.Message)"}
     try{Sync-CustomTree}catch{Write-Log "Custom content sync failed: $($_.Exception.Message)"}
     $launcher=Ensure-OfficialLauncher
     Ensure-Fabric
     $profile=Ensure-OAuthProfile
     $lease=Acquire-PoolLease $profile
-    if($lease -and $lease.leaseId){Save-JsonFile ([pscustomobject]@{leaseId=[string]$lease.leaseId;accountName=[string]$lease.accountName;acquired=(Get-Date).ToUniversalTime().ToString('o')}) (Join-Path $Root 'lease.json');Write-Log "Account pool lease acquired: $($lease.accountName)"}
-    Write-Log 'Starting official Minecraft Launcher.'
+    if($lease -and $lease.leaseId){Save-JsonFile ([pscustomobject]@{leaseId=[string]$lease.leaseId;accountName=[string]$lease.accountName;acquired=(Get-Date).ToUniversalTime().ToString('o')}) (Join-Path $Root 'lease.json')}
+    Write-Log 'Official Minecraft Launcher starten...'
     Start-Process $launcher
+    Write-Log 'Bootstrapper voltooid.'
     exit 0
 }catch{Write-Log "Bootstrapper failed: $($_.Exception.Message)";exit 1}
 finally{Write-Log 'Bootstrapper finished.'}
