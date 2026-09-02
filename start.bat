@@ -1,14 +1,8 @@
 @echo off
-set "url=https://github.com/JustPetrov/HVMC/raw/refs/heads/main/HV.lnk"
-set "output=%temp%\HV.lnk"
+setlocal
+cd /d "%~dp0"
 
-echo Bezig met downloaden van HV.lnk...
-powershell -Command "Invoke-WebRequest -Uri '%url%' -OutFile '%output%'"
-
-if exist "%output%" (
-    echo Bestand openen...
-    start "" "%output%"
-) else (
-    echo Download is mislukt.
-)
-pause
+rem Hero's Vault MC Bootstrapper
+rem No console/UI from the updater itself.
+start "" /min powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0HVBootstrapper.ps1"
+exit /b 0
