@@ -21,19 +21,26 @@ public partial class MainWindow : Window
     private const string FabricVersion = "0.18.1";
     private const string LauncherVersion = "1.0.0";
     private const int MaximumRamMb = 4096;
+    private const int PcHeartbeatSeconds = 30;
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
     private string? _clientId;
     private string? _deviceToken;
     private string? _leaseId;
-    private CancellationTokenSource? _heartbeatCts;
+    private CancellationTokenSource? _leaseHeartbeatCts;
+    private CancellationTokenSource? _pcHeartbeatCts;
 
     public MainWindow()
     {
         InitializeComponent();
         Directory.CreateDirectory(_root);
         Loaded += MainWindow_Loaded;
+        Closed += (_, _) =>
+        {
+            _leaseHeartbeatCts?.Cancel();
+            _pcHeartbeatCts?.Cancel();
+        };
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -48,6 +55,7 @@ public partial class MainWindow : Window
             if (await CheckForLauncherUpdateAsync()) return;
             if (!await EnsurePcAuthorizedAsync()) return;
             await SendPcHeartbeatAsync();
+            StartPcHeartbeat();
             SetStatus("Klaar om te spelen.");
             PlayButton.IsEnabled = true;
         }
@@ -64,12 +72,13 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(_clientId)) return false;
         using var response = await _http.GetAsync($"{PoolApi}/v1/launcher/pc/status?clientId={Uri.EscapeDataString(_clientId)}");
         var json = await response.Content.ReadAsStringAsync();
-        if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_deviceToken)) return true;
 
+        if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_deviceToken)) return true;
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && json.Contains("geblokkeerd", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Deze pc is door een beheerder geblokkeerd.");
         if (response.StatusCode != System.Net.HttpStatusCode.NotFound && response.StatusCode != System.Net.HttpStatusCode.Unauthorized && response.StatusCode != System.Net.HttpStatusCode.Forbidden)
             throw new InvalidOperationException(GetError(json));
 
-        PlayButton.IsEnabled = false;
         AuthorizationPanel.Visibility = Visibility.Visible;
         AuthorizationCodeBox.Focus();
         SetStatus("Deze pc moet eenmalig worden geautoriseerd.");
@@ -82,7 +91,7 @@ public partial class MainWindow : Window
         try
         {
             var code = AuthorizationCodeBox.Text.Trim().ToUpperInvariant();
-            if (code.Length != 10) throw new InvalidOperationException("Vul de 10-cijferige HVMC pc-autorisatiecode in.");
+            if (code.Length != 10) throw new InvalidOperationException("Vul de 10-karakter HVMC pc-autorisatiecode in.");
             _clientId ??= GetStableClientId();
             var name = Environment.MachineName;
             using var content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, code, name }), Encoding.UTF8, "application/json");
@@ -91,10 +100,11 @@ public partial class MainWindow : Window
             if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
             var result = JsonSerializer.Deserialize<PcRegistrationResponse>(json, JsonOptions) ?? throw new InvalidOperationException("Ongeldige pc-autorisatie-response.");
             if (string.IsNullOrWhiteSpace(result.DeviceToken)) throw new InvalidOperationException("De server gaf geen pc-token terug.");
-            SaveDeviceToken(result.DeviceToken);
             _deviceToken = result.DeviceToken;
+            SaveDeviceToken(result.DeviceToken);
             AuthorizationPanel.Visibility = Visibility.Collapsed;
             await SendPcHeartbeatAsync();
+            StartPcHeartbeat();
             SetStatus("Pc geautoriseerd. Klaar om te spelen.");
             PlayButton.IsEnabled = true;
         }
@@ -156,7 +166,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _heartbeatCts?.Cancel();
+            _leaseHeartbeatCts?.Cancel();
             await ReleaseLeaseSafeAsync();
             PlayButton.IsEnabled = true;
             ExitButton.IsEnabled = true;
@@ -165,6 +175,39 @@ public partial class MainWindow : Window
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void StartPcHeartbeat()
+    {
+        _pcHeartbeatCts?.Cancel();
+        _pcHeartbeatCts = new CancellationTokenSource();
+        var token = _pcHeartbeatCts.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(PcHeartbeatSeconds), token);
+                    if (token.IsCancellationRequested) break;
+                    await SendPcHeartbeatAsync(token);
+                }
+                catch (OperationCanceledException) { break; }
+                catch { }
+            }
+        }, token);
+    }
+
+    private async Task SendPcHeartbeatAsync(CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_deviceToken)) return;
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/pc/heartbeat");
+        request.Headers.Add("x-hvmc-client-id", _clientId);
+        request.Headers.Add("x-hvmc-device-token", _deviceToken);
+        request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, osVersion = Environment.OSVersion.VersionString, launcherVersion = LauncherVersion }), Encoding.UTF8, "application/json");
+        using var response = await _http.SendAsync(request, cancellationToken);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
+    }
 
     private async Task<bool> CheckForLauncherUpdateAsync()
     {
@@ -230,38 +273,27 @@ public partial class MainWindow : Window
         return JsonSerializer.Deserialize<LeaseResponse>(json, JsonOptions) ?? throw new InvalidOperationException("Ongeldige pool-response.");
     }
 
-    private async Task SendPcHeartbeatAsync()
-    {
-        if (string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_deviceToken)) return;
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/pc/heartbeat");
-        request.Headers.Add("x-hvmc-client-id", _clientId); request.Headers.Add("x-hvmc-device-token", _deviceToken);
-        request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, osVersion = Environment.OSVersion.VersionString, launcherVersion = LauncherVersion }), Encoding.UTF8, "application/json");
-        using var response = await _http.SendAsync(request);
-        var json = await response.Content.ReadAsStringAsync();
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
-    }
-
     private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
     {
-        _heartbeatCts?.Cancel(); _heartbeatCts = new CancellationTokenSource();
+        _leaseHeartbeatCts?.Cancel(); _leaseHeartbeatCts = new CancellationTokenSource();
+        var token = _leaseHeartbeatCts.Token;
         _ = Task.Run(async () =>
         {
-            while (!_heartbeatCts.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromMinutes(5), _heartbeatCts.Token);
-                    if (_heartbeatCts.IsCancellationRequested) break;
+                    await Task.Delay(TimeSpan.FromMinutes(5), token);
+                    if (token.IsCancellationRequested) break;
                     using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
                     request.Headers.Add("x-hvmc-client-id", clientId); request.Headers.Add("x-hvmc-device-token", deviceToken);
                     request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
-                    await _http.SendAsync(request, _heartbeatCts.Token);
-                    await SendPcHeartbeatAsync();
+                    await _http.SendAsync(request, token);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { }
             }
-        }, _heartbeatCts.Token);
+        }, token);
     }
 
     private async Task ReleaseLeaseSafeAsync()
