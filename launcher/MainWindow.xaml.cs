@@ -1,11 +1,14 @@
 using CmlLib.Core;
+using CmlLib.Core.Auth;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using Forms = System.Windows.Forms;
+using WpfMessageBox = System.Windows.MessageBox;
 
 namespace HVMCLauncher;
 
@@ -44,7 +47,6 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            // A launcher update is optional; an existing launcher should still be usable.
             SetStatus("Klaar om te spelen.");
             PlayButton.IsEnabled = true;
             Debug.WriteLine($"Launcher update check failed: {ex}");
@@ -69,8 +71,11 @@ public partial class MainWindow : Window
             var minecraftPath = new MinecraftPath(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
             var minecraftLauncher = new MinecraftLauncher(minecraftPath);
-            var session = new MSession(lease.Username, lease.MinecraftAccessToken, lease.Uuid)
+            var session = new MSession
             {
+                Username = lease.Username,
+                AccessToken = lease.MinecraftAccessToken,
+                UUID = lease.Uuid,
                 Xuid = lease.Xuid ?? string.Empty
             };
 
@@ -101,7 +106,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Starten mislukt.");
-            MessageBox.Show(this, ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(this, ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
