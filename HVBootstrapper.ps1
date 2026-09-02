@@ -1,3 +1,7 @@
+param(
+    [switch]$UpdateOnly
+)
+
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'Bendemen-Studios/HVMC'
@@ -18,8 +22,8 @@ $FabricLoader = '0.18.1'
 
 foreach ($dir in @($Root,$MinecraftDir,$MinecraftDir+'\mods',$MinecraftDir+'\config',$MinecraftDir+'\resourcepacks',$MinecraftDir+'\shaderpacks',$MinecraftDir+'\datapacks',$MinecraftDir+'\kubejs')) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 
-function Write-Log([string]$Message) { 
-    try { Add-Content -LiteralPath $LogPath -Value ("{0:u} {1}" -f (Get-Date),$Message) -Encoding UTF8 } catch {}
+function Write-Log([string]$Message) {
+    try { Add-Content -LiteralPath $LogPath -Value (("{0:u} {1}" -f (Get-Date),$Message)) -Encoding UTF8 } catch {}
     Write-Host "[HVMC] $Message"
 }
 function Get-GitHubFile([string]$Name) { Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/contents/$Name?ref=$Branch" -Headers @{'User-Agent'='HVMC-Bootstrapper'} -TimeoutSec 20 }
@@ -35,14 +39,6 @@ function Download-File([string]$Url,[string]$Destination,[string]$ExpectedSha512
 }
 function Read-JsonFile([string]$Path) { if (Test-Path $Path) { try { return Get-Content $Path -Raw | ConvertFrom-Json } catch {} }; return $null }
 function Save-JsonFile($Object,[string]$Path) { $Object | ConvertTo-Json -Depth 20 | Set-Content $Path -Encoding UTF8 }
-function Read-SecureStringFile([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    try {
-        $secure=Get-Content -LiteralPath $Path -Raw | ConvertTo-SecureString
-        $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
-    } catch { return $null }
-}
 function Safe-Relative([string]$Relative) { $p=$Relative.Replace('/','\'); if ([IO.Path]::IsPathRooted($p) -or $p.Contains('..')) { throw "Unsafe path: $p" }; return $p }
 function Sync-PackEntry($Entry) {
     $relative=Safe-Relative ([string]$Entry.path);$destination=Join-Path $Instance $relative;$sha512='';$sha1=''
@@ -99,46 +95,20 @@ function Ensure-Fabric {
     if($p.ExitCode -ne 0 -or -not(Test-Path $fabricVersion)){throw 'Fabric installation failed.'}
     Write-Log 'Fabric installatie voltooid.'
 }
-function Get-PoolConfig {
-    $cfg=Read-JsonFile $PoolConfigPath
-    if(-not $cfg){$cfg=[pscustomobject]@{enabled=$true;url='https://accounts.hvmc.nl';autoSelect=$true;requireOAuth=$true;leaseSeconds=3600};Save-JsonFile $cfg $PoolConfigPath}
-    return $cfg
-}
-function Ensure-OAuthProfile {
-    $cfg=Get-PoolConfig;if(-not $cfg.enabled -or -not $cfg.requireOAuth){Write-Log 'OAuth is uitgeschakeld.';return $null}
-    $oauthScript=Join-Path $PSScriptRoot 'HVMCOAuth.ps1';if(-not(Test-Path $oauthScript)){throw 'HVMCOAuth.ps1 is missing.'}
-    Write-Log 'Microsoft OAuth controleren...'
-    $result=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $oauthScript 2>&1
-    if($LASTEXITCODE -ne 0){throw (($result|Out-String).Trim())}
-    Write-Log 'Microsoft OAuth gereed.'
-    return Read-JsonFile $OAuthProfilePath
-}
-function Acquire-PoolLease($Profile) {
-    $cfg=Get-PoolConfig;if(-not $cfg.enabled -or [string]::IsNullOrWhiteSpace([string]$cfg.url)){Write-Log 'Accountpool is uitgeschakeld.';return $null}
-    $idToken=Read-SecureStringFile $OAuthIdTokenPath
-    if($cfg.requireOAuth -and -not $idToken){throw 'No Microsoft OAuth identity token is available.'}
-    try {
-        Write-Log 'Accountpool lease aanvragen...'
-        $headers=@{'Accept'='application/json'};if($idToken){$headers['Authorization']='Bearer '+$idToken}
-        $body=@{clientId="$env:COMPUTERNAME-$env:USERNAME";accountId=if($Profile){[string]$Profile.id}else{''};product='HVMC';minecraftVersion=$McVersion}|ConvertTo-Json
-        $lease=Invoke-RestMethod -Uri ([string]$cfg.url).TrimEnd('/')+'/v1/lease/acquire' -Method Post -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 10
-        Write-Log "Accountpool lease verkregen: $($lease.accountName)"
-        return $lease
-    }catch{Write-Log "Account pool unavailable: $($_.Exception.Message)";return $null}
-}
 
-Write-Log 'Bootstrapper gestart.'
+Write-Log 'HVMC updater gestart.'
 try {
-    try{$remotePack=Get-GitHubFile 'HV.mrpack';$state=Read-JsonFile $StatePath;if(-not(Test-Path $PackPath)-or -not $state -or [string]$state.packSha -ne [string]$remotePack.sha){Write-Log 'Modpack-update gevonden; downloaden...';if(-not(Download-File $remotePack.download_url $PackPath)){throw 'Could not download HV.mrpack.'};Save-JsonFile ([pscustomobject]@{packSha=[string]$remotePack.sha}) $StatePath}else{Write-Log 'Modpack is up-to-date.'};$index=Sync-Mrpack $PackPath;Write-Log "Pack synchronized: $($index.name) $($index.versionId)"}catch{Write-Log "Pack synchronization failed: $($_.Exception.Message)"}
-    try{Sync-CustomTree}catch{Write-Log "Custom content sync failed: $($_.Exception.Message)"}
-    $launcher=Ensure-OfficialLauncher
+    $remotePack=Get-GitHubFile 'HV.mrpack'
+    $state=Read-JsonFile $StatePath
+    $needsPackUpdate=(-not(Test-Path $PackPath)-or -not $state -or [string]$state.packSha -ne [string]$remotePack.sha)
+    if($needsPackUpdate){Write-Log 'Nieuwe modpackversie gevonden; downloaden...';if(-not(Download-File $remotePack.download_url $PackPath)){throw 'Could not download HV.mrpack.'};Save-JsonFile ([pscustomobject]@{packSha=[string]$remotePack.sha}) $StatePath}else{Write-Log 'Modpack is up-to-date.'}
+    $index=Sync-Mrpack $PackPath
+    Write-Log "Pack synchronized: $($index.name) $($index.versionId)"
+    Sync-CustomTree
+    Ensure-OfficialLauncher | Out-Null
     Ensure-Fabric
-    $profile=Ensure-OAuthProfile
-    $lease=Acquire-PoolLease $profile
-    if($lease -and $lease.leaseId){Save-JsonFile ([pscustomobject]@{leaseId=[string]$lease.leaseId;accountName=[string]$lease.accountName;acquired=(Get-Date).ToUniversalTime().ToString('o')}) (Join-Path $Root 'lease.json')}
-    Write-Log 'Official Minecraft Launcher starten...'
-    Start-Process $launcher
-    Write-Log 'Bootstrapper voltooid.'
+    Write-Log 'Updates en benodigdheden zijn gereed.'
+    if(-not $UpdateOnly){ Write-Log 'Update-only mode staat uit; alleen updaterfunctie uitgevoerd.' }
     exit 0
-}catch{Write-Log "Bootstrapper failed: $($_.Exception.Message)";exit 1}
-finally{Write-Log 'Bootstrapper finished.'}
+}catch{Write-Log "Updater mislukt: $($_.Exception.Message)";exit 1}
+finally{Write-Log 'HVMC updater afgerond.'}
