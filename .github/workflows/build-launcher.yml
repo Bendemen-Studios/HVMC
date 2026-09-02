@@ -26,20 +26,14 @@ jobs:
       - name: Restore launcher
         run: dotnet restore launcher/HVMCLauncher.csproj
 
-      - name: Restore provisioner
-        run: dotnet restore launcher/HVMCProvisioner.csproj
-
       - name: Publish launcher
         run: dotnet publish launcher/HVMCLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/HVMCLauncher
 
-      - name: Publish provisioner
-        run: dotnet publish launcher/HVMCProvisioner.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/HVMCProvisioner
-
-      - name: Upload artifacts
+      - name: Upload launcher artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HVMC-tools-win-x64
-          path: artifacts/
+          name: HVMCLauncher-win-x64
+          path: artifacts/HVMCLauncher/HVMCLauncher.exe
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -48,8 +42,6 @@ jobs:
           name: HVMC Launcher Build ${{ github.run_number }}
           generate_release_notes: false
           prerelease: false
-          files: |
-            artifacts/HVMCLauncher/HVMCLauncher.exe
-            artifacts/HVMCProvisioner/HVMCProvisioner.exe
+          files: artifacts/HVMCLauncher/HVMCLauncher.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
