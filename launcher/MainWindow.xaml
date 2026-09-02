@@ -1,0 +1,77 @@
+<Window x:Class="HVMCLauncher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HVMC"
+        Width="520"
+        Height="650"
+        MinWidth="460"
+        MinHeight="580"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="#F7F4EC"
+        Foreground="#27241E">
+    <Grid Margin="42">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+            <TextBlock Text="HVMC"
+                       FontFamily="Segoe UI"
+                       FontSize="78"
+                       FontWeight="Bold"
+                       Foreground="#B8871F"
+                       HorizontalAlignment="Center" />
+            <TextBlock Text="HERO'S VAULT"
+                       FontSize="16"
+                       FontWeight="SemiBold"
+                       Foreground="#746B5B"
+                       HorizontalAlignment="Center" />
+        </StackPanel>
+
+        <TextBlock x:Name="StatusText"
+                   Grid.Row="1"
+                   Text="Klaar om te spelen."
+                   FontSize="14"
+                   Foreground="#746B5B"
+                   TextAlignment="Center"
+                   HorizontalAlignment="Center"
+                   Margin="0,20,0,20" />
+
+        <StackPanel Grid.Row="2"
+                    VerticalAlignment="Center"
+                    Margin="55,0">
+            <Button x:Name="PlayButton"
+                    Content="SPELEN"
+                    Height="76"
+                    Margin="0,0,0,18"
+                    FontSize="25"
+                    FontWeight="Bold"
+                    Foreground="#261E0B"
+                    Background="#D7A62F"
+                    BorderBrush="#B8871F"
+                    BorderThickness="1"
+                    Click="PlayButton_Click" />
+            <Button x:Name="ExitButton"
+                    Content="AFSLUITEN"
+                    Height="62"
+                    FontSize="18"
+                    FontWeight="SemiBold"
+                    Foreground="#4B463D"
+                    Background="#FFFFFF"
+                    BorderBrush="#C9B98F"
+                    BorderThickness="1"
+                    Click="ExitButton_Click" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="3"
+                   Text="Bendemen Studios"
+                   FontSize="12"
+                   Foreground="#9A907D"
+                   HorizontalAlignment="Center"
+                   Margin="0,25,0,0" />
+    </Grid>
+</Window>
