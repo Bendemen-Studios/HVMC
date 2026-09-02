@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+import { registerPcManagement } from './pc-management.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -16,6 +17,8 @@ app.use(express.static(path.join(__dirname, 'public'), { index: false, dotfiles:
 app.get('/', (_req, res) => res.redirect('/admin'));
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 app.get('/admin/', (_req, res) => res.redirect('/admin'));
+app.get('/admin/pcs', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'pc-admin.html')));
+app.get('/admin/pcs/', (_req, res) => res.redirect('/admin/pcs'));
 
 const PORT = Number(process.env.PORT || 8080);
 const DB_PATH = process.env.DB_PATH || './hvmc-pool.db';
@@ -146,6 +149,8 @@ function requireAdmin(req, res) {
   }
   return true;
 }
+
+registerPcManagement(app, db, requireAdmin);
 function encryptSecret(value) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', poolKey, iv);
