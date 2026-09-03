@@ -19,7 +19,7 @@ public partial class MainWindow : Window
     private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "1.21.11";
     private const string FabricVersion = "0.18.1";
-    private const string LauncherVersion = "1.0.0";
+    private const string LauncherVersion = "1.2.0";
     private const int MaximumRamMb = 4096;
     private const int PcHeartbeatSeconds = 30;
 
@@ -62,7 +62,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Controle mislukt.");
-            WpfMessageBox.Show(this, ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
             ExitButton.IsEnabled = true;
         }
     }
@@ -111,7 +111,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Pc-autorisatie mislukt.");
-            WpfMessageBox.Show(this, ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally { AuthorizeButton.IsEnabled = true; }
     }
@@ -149,7 +149,7 @@ public partial class MainWindow : Window
             {
                 Session = session,
                 MaximumRamMb = MaximumRamMb,
-                GameLauncherName = "HVMC",
+                GameLauncherName = "HVMC School Launcher",
                 FullScreen = true,
                 ScreenWidth = width,
                 ScreenHeight = height
@@ -162,7 +162,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Starten mislukt.");
-            WpfMessageBox.Show(this, ex.Message, "HVMC", MessageBoxButton.OK, MessageBoxImage.Error);
+            WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -214,7 +214,7 @@ public partial class MainWindow : Window
         var currentExe = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe)) return false;
         using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
-        request.Headers.UserAgent.ParseAdd("HVMC-Launcher");
+        request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
         using var response = await _http.SendAsync(request);
         if (!response.IsSuccessStatusCode) return false;
         var json = await response.Content.ReadAsStringAsync();
@@ -243,10 +243,11 @@ public partial class MainWindow : Window
         await using var stream = File.OpenRead(path);
         return await SHA256.HashDataAsync(stream);
     }
+
     private static void ScheduleSelfReplacement(string currentExe, string updateExe)
     {
         var pid = Environment.ProcessId;
-        static string Ps(string value) => "'" + value.Replace("'", "''") + "'";
+        static string Ps(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
         var script = $"$pid={pid};$src={Ps(updateExe)};$dst={Ps(currentExe)};Start-Sleep -Milliseconds 800;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};Move-Item -LiteralPath $src -Destination $dst -Force;Start-Process -FilePath $dst";
         Process.Start(new ProcessStartInfo { FileName = "powershell.exe", Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"", UseShellExecute = false, CreateNoWindow = true });
         Environment.Exit(0);
@@ -259,23 +260,28 @@ public partial class MainWindow : Window
         response.EnsureSuccessStatusCode();
         await File.WriteAllBytesAsync(updater, await response.Content.ReadAsByteArrayAsync());
         using var p = Process.Start(new ProcessStartInfo { FileName = "powershell.exe", UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, ArgumentList = { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater } }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
-        var stdout = await p.StandardOutput.ReadToEndAsync(); var stderr = await p.StandardError.ReadToEndAsync(); await p.WaitForExitAsync();
+        var stdout = await p.StandardOutput.ReadToEndAsync();
+        var stderr = await p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
         if (p.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
     }
 
     private async Task<LeaseResponse> AcquireLeaseAsync(string clientId, string deviceToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/acquire");
-        request.Headers.Add("x-hvmc-client-id", clientId); request.Headers.Add("x-hvmc-device-token", deviceToken);
+        request.Headers.Add("x-hvmc-client-id", clientId);
+        request.Headers.Add("x-hvmc-device-token", deviceToken);
         request.Content = new StringContent(JsonSerializer.Serialize(new { clientId }), Encoding.UTF8, "application/json");
-        using var response = await _http.SendAsync(request); var json = await response.Content.ReadAsStringAsync();
+        using var response = await _http.SendAsync(request);
+        var json = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
         return JsonSerializer.Deserialize<LeaseResponse>(json, JsonOptions) ?? throw new InvalidOperationException("Ongeldige pool-response.");
     }
 
     private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
     {
-        _leaseHeartbeatCts?.Cancel(); _leaseHeartbeatCts = new CancellationTokenSource();
+        _leaseHeartbeatCts?.Cancel();
+        _leaseHeartbeatCts = new CancellationTokenSource();
         var token = _leaseHeartbeatCts.Token;
         _ = Task.Run(async () =>
         {
@@ -286,7 +292,8 @@ public partial class MainWindow : Window
                     await Task.Delay(TimeSpan.FromMinutes(5), token);
                     if (token.IsCancellationRequested) break;
                     using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
-                    request.Headers.Add("x-hvmc-client-id", clientId); request.Headers.Add("x-hvmc-device-token", deviceToken);
+                    request.Headers.Add("x-hvmc-client-id", clientId);
+                    request.Headers.Add("x-hvmc-device-token", deviceToken);
                     request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
                     await _http.SendAsync(request, token);
                 }
@@ -302,7 +309,8 @@ public partial class MainWindow : Window
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/release");
-            request.Headers.Add("x-hvmc-client-id", _clientId); request.Headers.Add("x-hvmc-device-token", _deviceToken);
+            request.Headers.Add("x-hvmc-client-id", _clientId);
+            request.Headers.Add("x-hvmc-device-token", _deviceToken);
             request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, leaseId = _leaseId }), Encoding.UTF8, "application/json");
             await _http.SendAsync(request);
         }
@@ -313,15 +321,24 @@ public partial class MainWindow : Window
     private string GetStableClientId()
     {
         var path = Path.Combine(_root, "client-id.txt");
-        if (File.Exists(path)) { var existing = File.ReadAllText(path).Trim(); if (Guid.TryParse(existing, out _)) return existing; }
-        var created = Guid.NewGuid().ToString(); File.WriteAllText(path, created); return created;
+        if (File.Exists(path))
+        {
+            var existing = File.ReadAllText(path).Trim();
+            if (Guid.TryParse(existing, out _)) return existing;
+        }
+        var created = Guid.NewGuid().ToString();
+        File.WriteAllText(path, created);
+        return created;
     }
+
     private string? GetDeviceToken()
     {
         var path = Path.Combine(_root, "device-token.txt");
         if (!File.Exists(path)) return null;
-        var token = File.ReadAllText(path).Trim(); return string.IsNullOrWhiteSpace(token) ? null : token;
+        var token = File.ReadAllText(path).Trim();
+        return string.IsNullOrWhiteSpace(token) ? null : token;
     }
+
     private void SaveDeviceToken(string token) => File.WriteAllText(Path.Combine(_root, "device-token.txt"), token);
     private void SetStatus(string message) => StatusText.Text = message;
     private static string GetError(string json)
