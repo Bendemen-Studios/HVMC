@@ -1,0 +1,69 @@
+name: Fix upstream JSON parsing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch server JSON handling
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('server/server.js')
+          text = path.read_text(encoding='utf-8')
+          marker = "registerPcManagement(app, db, requireAdmin);\n"
+          helper = '''registerPcManagement(app, db, requireAdmin);\n\nasync function readJsonResponse(response, context) {\n  const raw = await response.text();\n  if (!raw.trim()) {\n    throw new Error(`${context} returned an empty response (HTTP ${response.status}).`);\n  }\n  try {\n    return JSON.parse(raw);\n  } catch {\n    const preview = raw.length > 400 ? `${raw.slice(0, 400)}...` : raw;\n    throw new Error(`${context} returned invalid JSON (HTTP ${response.status}): ${preview}`);\n  }\n}\n'''
+          if 'async function readJsonResponse(response, context)' not in text:
+              if marker not in text:
+                  raise SystemExit('server.js marker not found')
+              text = text.replace(marker, helper, 1)
+
+          replacements = {
+              "  const data = await response.json();\n  if (!response.ok) throw new Error(data.error_description || data.error || 'Microsoft device login could not be started');":
+              "  const data = await readJsonResponse(response, 'Microsoft device login start');\n  if (!response.ok) throw new Error(data.error_description || data.error || 'Microsoft device login could not be started');",
+              "  const data = await response.json();\n  if (response.ok) return { state: 'complete', data };":
+              "  const data = await readJsonResponse(response, 'Microsoft device token poll');\n  if (response.ok) return { state: 'complete', data };",
+              "    if (response.ok) return await response.json();":
+              "    if (response.ok) return await readJsonResponse(response, 'Microsoft Graph profile');",
+              "  const data = await response.json();\n  if (!response.ok || !data.access_token) throw new Error(data.error_description || data.error || 'Microsoft refresh failed');":
+              "  const data = await readJsonResponse(response, 'Microsoft refresh token exchange');\n  if (!response.ok || !data.access_token) throw new Error(data.error_description || data.error || 'Microsoft refresh failed');",
+              "  const xblData = await xbl.json();":
+              "  const xblData = await readJsonResponse(xbl, 'Xbox Live authentication');",
+              "  const xstsData = await xsts.json();":
+              "  const xstsData = await readJsonResponse(xsts, 'Xbox XSTS authentication');",
+              "  const mcData = await mc.json();":
+              "  const mcData = await readJsonResponse(mc, 'Minecraft authentication');",
+              "  const profile = await profileResponse.json();":
+              "  const profile = await readJsonResponse(profileResponse, 'Minecraft Java profile');",
+          }
+
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'Expected server.js fragment not found: {old[:100]}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          if git diff --quiet -- server/server.js; then
+            echo "No changes needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/server.js
+          git commit -m "Fix upstream JSON parsing in account pool"
+          git push
