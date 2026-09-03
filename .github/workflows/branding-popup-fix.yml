@@ -1,0 +1,45 @@
+name: Fix dashboard branding and organization confirmation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update dashboard HTML
+        shell: python
+        run: |
+          from pathlib import Path
+
+          files = [Path('server/public/admin.html'), Path('server/public/pc-admin.html')]
+          for p in files:
+              s = p.read_text(encoding='utf-8')
+              if '<link rel="icon" href="/hvlauncher.ico">' not in s:
+                  s = s.replace('<meta name="viewport" content="width=device-width,initial-scale=1">', '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/hvlauncher.ico" type="image/x-icon">', 1)
+              s = s.replace('<div class="mark">HV</div>', '<img class="mark brandLogo" src="/hv.png" alt="HVMC">')
+              s = s.replace('background:linear-gradient(145deg,#d8ab43,#b98520);display:grid;place-items:center;', 'background:transparent;display:grid;place-items:center;')
+              if '.brandLogo{' not in s:
+                  s = s.replace('.kicker{', '.brandLogo{width:52px;height:52px;object-fit:contain;display:block}.kicker{', 1)
+              s = s.replace('.mark{width:44px;', '.mark{width:44px;', 1)
+              s = s.replace('async function deleteOrg(id,name,event){if(event)event.stopPropagation();if(!confirm(`Organisatie \\"${name}\\" verwijderen? De gekoppelde PC\'s blijven bestaan maar worden ongekoppeld.`))return;', 'async function deleteOrg(id,name,event){if(event)event.stopPropagation();if(!confirm(`Weet je zeker dat je deze organisatie wilt verwijderen?\\n\\nOrganisatie: "${name}"\\n\\nDe gekoppelde PC\'s blijven bestaan, maar worden losgekoppeld van deze organisatie.`))return;')
+              p.write_text(s, encoding='utf-8')
+
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/public/admin.html server/public/pc-admin.html .github/workflows/branding-popup-fix.yml
+          git commit -m "Use HVMC branding and confirm organization deletion" || exit 0
+          git rm -f .github/workflows/branding-popup-fix.yml || true
+          git commit -m "Remove temporary dashboard branding workflow" || true
+          git push origin main
