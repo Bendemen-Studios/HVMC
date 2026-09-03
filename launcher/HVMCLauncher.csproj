@@ -7,11 +7,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>hvmc.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <Target Name="PrepareApplicationIcon" BeforeTargets="PrepareForBuild">
+    <Exec Command="powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$p='$(MSBuildProjectDirectory)\hvmc.ico'; if(-not (Test-Path -LiteralPath $p)){ [IO.File]::WriteAllBytes($p,[Convert]::FromBase64String([IO.File]::ReadAllText('$(MSBuildProjectDirectory)\hvmc.ico.b64'))) }&quot;" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="CmlLib.Core" Version="4.0.6" />
     <PackageReference Include="CmlLib.Core.Auth.Microsoft" Version="3.3.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
+    <None Include="hvmc.ico.b64" CopyToOutputDirectory="Never" />
   </ItemGroup>
 </Project>
