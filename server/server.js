@@ -2,6 +2,7 @@ import express from 'express';
 import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'node:url';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { registerPcManagement } from './pc-management.js';
@@ -30,6 +31,16 @@ const DEFAULT_LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 3600);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/consumers';
 const MS_SCOPE = 'openid profile offline_access XboxLive.signin';
 const POOL_ENCRYPTION_KEY_B64 = String(process.env.POOL_ENCRYPTION_KEY || '');
+const EMAIL_FROM = String(process.env.EMAIL_FROM || 'automail@hvmc.nl');
+const EMAIL_SMTP_HOST = String(process.env.EMAIL_SMTP_HOST || '');
+const EMAIL_SMTP_PORT = Number(process.env.EMAIL_SMTP_PORT || 587);
+const EMAIL_SMTP_SECURE = /^(1|true|yes)$/i.test(String(process.env.EMAIL_SMTP_SECURE || 'false'));
+const EMAIL_SMTP_USER = String(process.env.EMAIL_SMTP_USER || '');
+const EMAIL_SMTP_PASSWORD = String(process.env.EMAIL_SMTP_PASSWORD || '');
+const EMAIL_AUTH_TTL_MS = 10 * 60 * 1000;
+const EMAIL_AUTH_COOLDOWN_MS = 60 * 1000;
+const EMAIL_AUTH_MAX_ATTEMPTS = 5;
+const EMAIL_AUTH_ALLOWED = new Set(['info@bendemen.nl', 'bendemenbv@gmail.com']);
 
 if (!MICROSOFT_CLIENT_ID) throw new Error('MICROSOFT_CLIENT_ID is required');
 if (!ADMIN_PASSWORD_HASH) throw new Error('ADMIN_PASSWORD_HASH is required');
@@ -41,6 +52,29 @@ try {
   if (poolKey.length !== 32) throw new Error('must decode to exactly 32 bytes');
 } catch (err) {
   throw new Error(`POOL_ENCRYPTION_KEY invalid: ${err.message}`);
+}
+
+let emailTransporter;
+function getEmailTransporter() {
+  if (!EMAIL_SMTP_HOST) throw new Error('Email authentication is not configured on the server (EMAIL_SMTP_HOST missing).');
+  if (!emailTransporter) {
+    emailTransporter = nodemailer.createTransport({
+      host: EMAIL_SMTP_HOST,
+      port: EMAIL_SMTP_PORT,
+      secure: EMAIL_SMTP_SECURE,
+      auth: EMAIL_SMTP_USER ? { user: EMAIL_SMTP_USER, pass: EMAIL_SMTP_PASSWORD } : undefined
+    });
+  }
+  return emailTransporter;
+}
+async function sendAdminEmailCode(to, code) {
+  await getEmailTransporter().sendMail({
+    from: EMAIL_FROM,
+    to,
+    subject: 'HVMC School Launcher – inlogcode',
+    text: `Je HVMC School Launcher inlogcode is: ${code}\n\nDeze code is 10 minuten geldig. Als je dit niet hebt aangevraagd, kun je deze e-mail negeren.`,
+    html: `<div style="font-family:Arial,sans-serif;max-width:520px"><h2>HVMC School Launcher</h2><p>Je inlogcode is:</p><p style="font-size:32px;font-weight:800;letter-spacing:8px">${code}</p><p>Deze code is 10 minuten geldig.</p><p>Heb je dit niet aangevraagd? Dan kun je deze e-mail negeren.</p></div>`
+  });
 }
 
 const db = new Database(DB_PATH);
@@ -89,6 +123,8 @@ if (!initialized) {
 
 const sessions = new Map();
 const loginAttempts = new Map();
+const emailAuthCodes = new Map();
+const emailAuthSendState = new Map();
 const linkAttempts = new Map();
 const launcherRate = new Map();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -106,6 +142,8 @@ function cleanupState() {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
   for (const [ip, info] of loginAttempts) if (info.resetAt <= now) loginAttempts.delete(ip);
+  for (const [email, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(email);
+  for (const [key, info] of emailAuthSendState) if (info.resetAt <= now) emailAuthSendState.delete(key);
   for (const [id, attempt] of linkAttempts) if (attempt.expiresAt <= now) linkAttempts.delete(id);
   cleanupExpired();
 }
@@ -132,7 +170,7 @@ function verifyPassword(password) {
   } catch { return false; }
 }
 function getSessionToken(req) {
-  return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  return String(req.headers.authorization || '').replace(/^Bearer\\s+/i, '').trim();
 }
 function isAdmin(req) {
   const legacy = String(req.headers['x-admin-token'] || '');
@@ -148,6 +186,21 @@ function requireAdmin(req, res) {
     return false;
   }
   return true;
+}
+function createAdminSession(res) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  sessions.set(token, { role: 'admin', username: ADMIN_USERNAME, expiresAt });
+  res.json({ ok: true, token, expiresAt: new Date(expiresAt).toISOString() });
+}
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+function hashAuthCode(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+function emailRateKey(req, email) {
+  return `${String(req.ip || req.socket.remoteAddress || 'unknown')}|${email}`;
 }
 
 registerPcManagement(app, db, requireAdmin);
@@ -272,7 +325,6 @@ function launcherRateLimit(req, res) {
   return true;
 }
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'hvmc-account-pool' }));
 app.post('/v1/admin/login', (req, res) => {
   cleanupState();
   const ip = String(req.ip || req.socket.remoteAddress || 'unknown');
@@ -283,10 +335,48 @@ app.post('/v1/admin/login', (req, res) => {
   const password = String(req.body?.password || '');
   if (!safeEqual(username, ADMIN_USERNAME) || !verifyPassword(password)) { attempt.count += 1; loginAttempts.set(ip, attempt); return res.status(401).json({ error: 'Ongeldige gebruikersnaam of wachtwoord.' }); }
   loginAttempts.delete(ip);
-  const token = crypto.randomBytes(32).toString('base64url');
-  sessions.set(token, { role: 'admin', username: ADMIN_USERNAME, expiresAt: Date.now() + SESSION_TTL_MS });
-  res.json({ ok: true, token, expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() });
+  createAdminSession(res);
 });
+
+app.post('/v1/admin/email/request', async (req, res) => {
+  cleanupState();
+  const email = normalizeEmail(req.body?.email);
+  if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });
+  const key = emailRateKey(req, email);
+  const current = emailAuthSendState.get(key);
+  if (current && current.resetAt > Date.now()) return res.status(429).json({ error: 'Vraag over een minuut een nieuwe code aan.' });
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  emailAuthCodes.set(email, { hash: hashAuthCode(code), expiresAt: Date.now() + EMAIL_AUTH_TTL_MS, attempts: 0 });
+  emailAuthSendState.set(key, { resetAt: Date.now() + EMAIL_AUTH_COOLDOWN_MS });
+  try {
+    await sendAdminEmailCode(email, code);
+    res.json({ ok: true, message: 'Inlogcode verzonden naar het opgegeven e-mailadres.' });
+  } catch (err) {
+    emailAuthCodes.delete(email);
+    res.status(502).json({ error: err.message || 'De e-mail kon niet worden verzonden.' });
+  }
+});
+
+app.post('/v1/admin/email/verify', (req, res) => {
+  cleanupState();
+  const email = normalizeEmail(req.body?.email);
+  const code = String(req.body?.code || '').replace(/\D/g, '').slice(0, 6);
+  if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });
+  const stored = emailAuthCodes.get(email);
+  if (!stored || stored.expiresAt <= Date.now()) {
+    emailAuthCodes.delete(email);
+    return res.status(401).json({ error: 'De code is verlopen of bestaat niet meer.' });
+  }
+  if (stored.attempts >= EMAIL_AUTH_MAX_ATTEMPTS) {
+    emailAuthCodes.delete(email);
+    return res.status(429).json({ error: 'Te veel onjuiste codes. Vraag een nieuwe code aan.' });
+  }
+  stored.attempts += 1;
+  if (code.length !== 6 || !safeEqual(stored.hash, hashAuthCode(code))) return res.status(401).json({ error: 'Onjuiste inlogcode.' });
+  emailAuthCodes.delete(email);
+  createAdminSession(res);
+});
+
 app.post('/v1/admin/logout', (req, res) => { const token = getSessionToken(req); if (token) sessions.delete(token); res.json({ ok: true }); });
 app.get('/v1/admin/me', (req, res) => { if (!requireAdmin(req, res)) return; res.json({ authenticated: true, username: ADMIN_USERNAME }); });
 
