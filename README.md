@@ -71,7 +71,9 @@ HVMC targets:
 - Fabric Loader **0.18.1**
 - Windows x64
 
-The launcher prepares Minecraft and Fabric automatically and starts Minecraft fullscreen using the detected primary display resolution. Fabric is installed with the official Windows installer when the required Fabric profile is missing. Fabric also provides a command-line client installation mode suitable for automated launchers. citeturn547448view0turn288579search4
+The launcher prepares Minecraft and Fabric automatically and starts Minecraft fullscreen using the detected primary display resolution.
+
+Fabric is installed **headlessly** using the official Universal/JAR installer and its command-line client mode. The Fabric GUI installer is not opened. The launcher first ensures the Minecraft installation/runtime exists, then the updater downloads the Universal installer and runs it silently.
 
 ## Content synchronisation
 
@@ -94,17 +96,17 @@ content/
 - new files are downloaded;
 - files removed from the managed repository are removed locally;
 - required Minecraft directories are created automatically;
-- Fabric is installed when missing.
+- the required Fabric profile is installed when missing.
 
 The updater also keeps a local manifest and state file under `%LOCALAPPDATA%\Bendemen\HVMC`.
 
-The launcher downloads the current updater script before running it. The updater runs without opening a visible command prompt.
+The updater runs without opening a visible command prompt.
 
 ## Launcher updates
 
-HVMC School Launcher checks the latest stable GitHub release at startup. When a newer `HVMCLauncher.exe` is available, the installed launcher downloads the new binary, verifies that it differs from the current executable, replaces itself after exiting and starts the new version.
+HVMC School Launcher checks the latest stable GitHub release at startup. It reads the semantic release tag (`v1.0`, `v1.1`, `v1.3`, etc.) and compares it with the launcher version.
 
-Because the application lives in the stable per-user application directory, Start Menu and desktop shortcuts continue to point to the updated executable.
+When a newer release contains `HVMCLauncher.exe`, the installed launcher downloads it to a temporary file, verifies the download, replaces the current executable after exiting, and starts the new version. This keeps Start Menu and desktop shortcuts pointed at the updated application.
 
 ## Offline behaviour
 
@@ -121,7 +123,7 @@ HVMC uses simple user-facing release versions:
 - major updates: **v2.0**, **v3.0**, ...
 - maintenance releases can continue as **v2.1**, **v2.2**, etc.
 
-`version.txt` is the content version source of truth. Public launcher releases are created only from version tags such as `v1.0`, `v1.1`, or `v2.0`; normal commits do not create public releases.
+`version.txt` is the content version source of truth. Public launcher releases are created only from version tags. Normal commits do not create public releases.
 
 ## Security
 
