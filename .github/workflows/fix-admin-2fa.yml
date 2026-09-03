@@ -1,0 +1,44 @@
+name: Fix admin 2FA verification
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-admin-2fa.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix verification route
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          p = Path('server/server.js')
+          s = p.read_text(encoding='utf-8')
+          marker = "app.post('/v1/admin/email/verify', (req, res) => {\n  cleanupState();\n"
+          insert = marker + "  const challengeId = String(req.body?.challengeId || '');\n  const challenge = emailAuthChallenges.get(challengeId);\n  if (!challenge || challenge.expiresAt <= Date.now()) return res.status(401).json({ error: 'De loginbevestiging is verlopen. Log opnieuw in.' });\n"
+          if marker not in s:
+              raise SystemExit('verify route marker not found')
+          if "const challengeId = String(req.body?.challengeId || '');\n  const email = normalizeEmail(req.body?.email);\n  const code = String(req.body?.code || '')" not in s:
+              s = s.replace(marker, insert, 1)
+          s = s.replace("  const stored = emailAuthCodes.get(email);", "  const stored = emailAuthCodes.get(challengeId);", 1)
+          if "const stored = emailAuthCodes.get(challengeId);" not in s:
+              raise SystemExit('challenge lookup not fixed')
+          p.write_text(s, encoding='utf-8')
+      - name: Validate
+        run: node --check server/server.js
+      - name: Commit and clean up
+        run: |
+          rm -f .github/workflows/fix-admin-2fa.yml
+          git config user.name 'HVMC Bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/server.js .github/workflows/fix-admin-2fa.yml
+          git commit -m 'Fix admin 2FA verification challenge'
+          git push
