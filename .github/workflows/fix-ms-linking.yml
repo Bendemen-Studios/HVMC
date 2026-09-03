@@ -1,0 +1,86 @@
+name: Fix HVMC Microsoft linking
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Repair Microsoft identity linking
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          path = Path('server/server.js')
+          text = path.read_text(encoding='utf-8')
+
+          # Device-code login must request OIDC identity claims in addition to Xbox access.
+          text, count = re.subn(
+              r"const MS_SCOPE = '[^']+';",
+              "const MS_SCOPE = 'openid profile offline_access XboxLive.signin';",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f'MS_SCOPE replacement count was {count}')
+
+          start_marker = 'async function profileFromAccessToken(accessToken, idToken) {'
+          end_marker = '\n\nasync function refreshMicrosoftAccessToken'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('profileFromAccessToken boundaries not found')
+
+          replacement = '''async function profileFromAccessToken(accessToken, idToken) {
+  if (!idToken) return null;
+  try {
+    const jwks = createRemoteJWKSet(new URL(`${MS_AUTHORITY}/discovery/v2.0/keys`));
+    const { payload } = await jwtVerify(String(idToken), jwks, {
+      audience: MICROSOFT_CLIENT_ID,
+      algorithms: ['RS256']
+    });
+    const tenantId = String(payload.tid || '');
+    const consumerTenantId = '9188040d-6c67-4c5b-b112-36a304b66dad';
+    if (tenantId && tenantId.toLowerCase() !== consumerTenantId) return null;
+    const oid = String(payload.oid || payload.sub || '');
+    if (!oid) return null;
+    return {
+      id: oid,
+      displayName: String(payload.name || ''),
+      userPrincipalName: String(payload.preferred_username || payload.email || ''),
+      mail: String(payload.email || '')
+    };
+  } catch {
+    return null;
+  }
+}'''
+
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text, encoding='utf-8')
+
+      - name: Validate Node server
+        run: node --check server/server.js
+
+      - name: Commit fix and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/server.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix Microsoft consumer account identity linking"
+          fi
+          git rm .github/workflows/fix-ms-linking.yml
+          git commit -m "Remove temporary Microsoft linking fix workflow"
+          git push origin main
