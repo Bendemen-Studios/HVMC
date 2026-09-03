@@ -1,0 +1,58 @@
+name: Apply Admin 2FA Fix
+on:
+  push:
+    paths:
+      - 'server/server.js'
+      - 'server/public/admin.html'
+      - 'server/package.json'
+      - '.github/workflows/apply-admin-2fa-fix.yml'
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply fixes
+        shell: python
+        run: |
+          from pathlib import Path
+          import json
+          p=Path('server/server.js'); s=p.read_text(encoding='utf-8')
+          if 'const emailAuthChallenges = new Map();' not in s:
+            s=s.replace("const emailAuthCodes = new Map();\nconst emailAuthSendState = new Map();", "const emailAuthCodes = new Map();\nconst emailAuthChallenges = new Map();\nconst emailAuthSendState = new Map();")
+          if "for (const [challengeId, info] of emailAuthChallenges)" not in s:
+            s=s.replace("  for (const [email, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(email);", "  for (const [challengeId, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(challengeId);\n  for (const [challengeId, info] of emailAuthChallenges) if (info.expiresAt <= now) emailAuthChallenges.delete(challengeId);")
+          s=s.replace("    subject: 'HVMC School Launcher – inlogcode',", "    subject: 'HVMC Account Dashboard',")
+          s=s.replace('Je HVMC School Launcher inlogcode is:', 'Je HVMC Account Dashboard-verificatiecode is:')
+          s=s.replace('<h2>HVMC School Launcher</h2>', '<h2>HVMC Account Dashboard</h2>')
+          old="  loginAttempts.delete(ip);\n  createAdminSession(res);\n});\n\napp.post('/v1/admin/email/request', async (req, res) => {\n  cleanupState();\n  const email = normalizeEmail(req.body?.email);\n  if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });"
+          new="  loginAttempts.delete(ip);\n  const challengeId = crypto.randomUUID();\n  const expiresAt = Date.now() + EMAIL_AUTH_TTL_MS;\n  emailAuthChallenges.set(challengeId, { username: ADMIN_USERNAME, expiresAt });\n  return res.json({ ok: true, requiresEmailCode: true, challengeId, expiresAt: new Date(expiresAt).toISOString(), allowedEmails: [...EMAIL_AUTH_ALLOWED] });\n});\n\napp.post('/v1/admin/email/request', async (req, res) => {\n  cleanupState();\n  const challengeId = String(req.body?.challengeId || '');\n  const email = normalizeEmail(req.body?.email);\n  const challenge = emailAuthChallenges.get(challengeId);\n  if (!challenge || challenge.expiresAt <= Date.now()) return res.status(400).json({ error: 'De loginbevestiging is verlopen. Log opnieuw in.' });\n  if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });"
+          if old in s: s=s.replace(old,new)
+          s=s.replace("  emailAuthCodes.set(email, { hash: hashAuthCode(code), expiresAt: Date.now() + EMAIL_AUTH_TTL_MS, attempts: 0 });", "  emailAuthCodes.set(challengeId, { email, hash: hashAuthCode(code), expiresAt: Date.now() + EMAIL_AUTH_TTL_MS, attempts: 0 });")
+          s=s.replace("    emailAuthCodes.delete(email);", "    emailAuthCodes.delete(challengeId);")
+          oldv="app.post('/v1/admin/email/verify', (req, res) => {\n  cleanupState();\n  const email = normalizeEmail(req.body?.email);\n  const code = String(req.body?.code || '').replace(/\\D/g, '').slice(0, 6);\n  if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });\n  const stored = emailAuthCodes.get(email);\n  if (!stored || stored.expiresAt <= Date.now()) {\n    emailAuthCodes.delete(email);"
+          newv="app.post('/v1/admin/email/verify', (req, res) => {\n  cleanupState();\n  const challengeId = String(req.body?.challengeId || '');\n  const email = normalizeEmail(req.body?.email);\n  const code = String(req.body?.code || '').replace(/\\D/g, '').slice(0, 6);\n  const challenge = emailAuthChallenges.get(challengeId);\n  if (!challenge || challenge.expiresAt <= Date.now()) return res.status(401).json({ error: 'De loginbevestiging is verlopen. Log opnieuw in.' });\n  if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });\n  const stored = emailAuthCodes.get(challengeId);\n  if (!stored || stored.expiresAt <= Date.now() || stored.email !== email) {\n    emailAuthCodes.delete(challengeId);"
+          if oldv in s: s=s.replace(oldv,newv)
+          s=s.replace("    emailAuthCodes.delete(email);\n    return res.status(429).json({ error: 'Te veel onjuiste codes. Vraag een nieuwe code aan.' });", "    emailAuthCodes.delete(challengeId);\n    emailAuthChallenges.delete(challengeId);\n    return res.status(429).json({ error: 'Te veel onjuiste codes. Vraag een nieuwe code aan.' });")
+          s=s.replace("  emailAuthCodes.delete(email);\n  createAdminSession(res);", "  emailAuthCodes.delete(challengeId);\n  emailAuthChallenges.delete(challengeId);\n  createAdminSession(res);")
+          p.write_text(s,encoding='utf-8')
+          p=Path('server/public/admin.html'); s=p.read_text(encoding='utf-8')
+          s=s.replace('<div id="loginMsg" class="msg">Log in met je gebruikersnaam en wachtwoord.</div>', '<div id="loginMsg" class="msg"></div>')
+          s=s.replace('<div class="msg">Je wachtwoord is goedgekeurd. Kies een toegestaan e-mailadres en ontvang een eenmalige code.</div>', '<div class="msg"></div>')
+          p.write_text(s,encoding='utf-8')
+          p=Path('server/package.json'); data=json.loads(p.read_text(encoding='utf-8')); data['scripts']['start']='node server.js'; p.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+      - name: Validate
+        run: |
+          node --check server/server.js
+          node -e "JSON.parse(require('fs').readFileSync('server/package.json','utf8')); console.log('package.json OK')"
+      - name: Commit fixes
+        run: |
+          git config user.name 'HVMC Bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/server.js server/public/admin.html server/package.json
+          if git diff --cached --quiet; then echo 'No changes needed'; exit 0; fi
+          git commit -m 'Fix admin email 2FA flow'
+          git push
