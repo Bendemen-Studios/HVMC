@@ -1,7 +1,8 @@
 name: Fix consumer Microsoft identity linking
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: write
@@ -23,11 +24,10 @@ jobs:
 
           old_scope = "const MS_SCOPE = 'offline_access XboxLive.signin';"
           new_scope = "const MS_SCOPE = 'openid profile offline_access XboxLive.signin';"
-          if old_scope not in s:
-              if new_scope not in s:
-                  raise SystemExit('Expected MS_SCOPE line not found')
-          else:
+          if old_scope in s:
               s = s.replace(old_scope, new_scope, 1)
+          elif new_scope not in s:
+              raise SystemExit('Expected MS_SCOPE line not found')
 
           start = s.index('async function profileFromAccessToken(accessToken, idToken) {')
           end = s.index('\n\nasync function refreshMicrosoftAccessToken', start)
