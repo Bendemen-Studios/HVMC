@@ -101,15 +101,30 @@ function Ensure-Fabric {
         Log "Fabric $FabricLoader voor Minecraft $McVersion gevonden."
         return
     }
+
     Log "Fabric $FabricLoader voor Minecraft $McVersion installeren..."
-    $meta = Invoke-RestMethod -Uri 'https://meta.fabricmc.net/v2/versions/installer' -Headers @{ 'User-Agent'='HVMC-Updater' } -TimeoutSec 30
-    $installer = $meta | Where-Object { $_.stable -eq $true -and $_.exe } | Select-Object -First 1
-    if (-not $installer) { throw 'Geen stabiele Fabric installer gevonden.' }
-    $installerPath = Join-Path $Root 'fabric-installer.exe'
-    Download ([string]$installer.exe) $installerPath
-    $proc = Start-Process -FilePath $installerPath -ArgumentList 'client','-dir',('"'+$MinecraftDir+'"'),'-mcversion',$McVersion,'-loader',$FabricLoader -Wait -PassThru
-    if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $target)) { throw 'Fabric installatie mislukt.' }
-    Log 'Fabric installatie voltooid.'
+    try {
+        $meta = Invoke-RestMethod -Uri 'https://meta.fabricmc.net/v2/versions/installer' -Headers @{ 'User-Agent'='HVMC-Updater'; 'Accept'='application/json' } -TimeoutSec 30
+        $installer = @($meta | Where-Object { $_.stable -eq $true -and $_.url }) | Select-Object -First 1
+        if (-not $installer) { throw 'Geen stabiele Fabric installer gevonden.' }
+
+        $installerUrl = [string]$installer.url
+        $installerVersion = [string]$installer.version
+        Log "Fabric installer $installerVersion gevonden."
+
+        $windowsUrl = if ($installerUrl -match '\.jar$') { $installerUrl -replace '\.jar$','.exe' } else { $installerUrl }
+        $installerPath = Join-Path $Root 'fabric-installer.exe'
+        Download $windowsUrl $installerPath
+
+        $proc = Start-Process -FilePath $installerPath -ArgumentList @('client','-dir',$MinecraftDir,'-mcversion',$McVersion,'-loader',$FabricLoader) -Wait -PassThru -WindowStyle Hidden
+        if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $target)) {
+            throw "Fabric installatie mislukt (exitcode $($proc.ExitCode))."
+        }
+        Log 'Fabric installatie voltooid.'
+    }
+    catch {
+        throw "Fabric installeren mislukt: $($_.Exception.Message)"
+    }
 }
 
 try {
@@ -174,7 +189,7 @@ try {
     }) $StatePath
 
     Ensure-Fabric
-    Log 'HVMC update/installatie voltooid.'
+    Log 'HVMC School Launcher update/installatie voltooid.'
     exit 0
 }
 catch {
