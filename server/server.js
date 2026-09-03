@@ -151,6 +151,19 @@ function requireAdmin(req, res) {
 }
 
 registerPcManagement(app, db, requireAdmin);
+
+async function readJsonResponse(response, context) {
+  const raw = await response.text();
+  if (!raw.trim()) {
+    throw new Error(`${context} returned an empty response (HTTP ${response.status}).`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const preview = raw.length > 400 ? `${raw.slice(0, 400)}...` : raw;
+    throw new Error(`${context} returned invalid JSON (HTTP ${response.status}): ${preview}`);
+  }
+}
 function encryptSecret(value) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', poolKey, iv);
@@ -180,7 +193,7 @@ async function microsoftDeviceStart() {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: MICROSOFT_CLIENT_ID, scope: MS_SCOPE })
   });
-  const data = await response.json();
+  const data = await readJsonResponse(response, 'Microsoft device login start');
   if (!response.ok) throw new Error(data.error_description || data.error || 'Microsoft device login could not be started');
   return data;
 }
@@ -189,7 +202,7 @@ async function microsoftDevicePoll(deviceCode) {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: MICROSOFT_CLIENT_ID, grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: deviceCode })
   });
-  const data = await response.json();
+  const data = await readJsonResponse(response, 'Microsoft device token poll');
   if (response.ok) return { state: 'complete', data };
   if (data.error === 'authorization_pending') return { state: 'pending' };
   if (data.error === 'slow_down') return { state: 'slow_down' };
@@ -200,7 +213,7 @@ async function microsoftDevicePoll(deviceCode) {
 async function profileFromAccessToken(accessToken, idToken) {
   try {
     const response = await fetch('https://graph.microsoft.com/v1.0/me?$select=id,displayName,userPrincipalName,mail', { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (response.ok) return await response.json();
+    if (response.ok) return await readJsonResponse(response, 'Microsoft Graph profile');
   } catch {}
   if (idToken) {
     try {
@@ -219,7 +232,7 @@ async function refreshMicrosoftAccessToken(refreshToken) {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ client_id: MICROSOFT_CLIENT_ID, grant_type: 'refresh_token', refresh_token: refreshToken, scope: MS_SCOPE })
   });
-  const data = await response.json();
+  const data = await readJsonResponse(response, 'Microsoft refresh token exchange');
   if (!response.ok || !data.access_token) throw new Error(data.error_description || data.error || 'Microsoft refresh failed');
   return data;
 }
@@ -228,7 +241,7 @@ async function minecraftSessionFromMicrosoftAccessToken(accessToken) {
     method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: `d=${accessToken}` }, RelyingParty: 'http://auth.xboxlive.com', TokenType: 'JWT' })
   });
-  const xblData = await xbl.json();
+  const xblData = await readJsonResponse(xbl, 'Xbox Live authentication');
   if (!xbl.ok || !xblData.Token) throw new Error(xblData.XErr ? `Xbox Live authentication failed (${xblData.XErr})` : 'Xbox Live authentication failed');
   const userHash = xblData.DisplayClaims?.xui?.[0]?.uhs;
   if (!userHash) throw new Error('Xbox Live user hash missing');
@@ -236,16 +249,16 @@ async function minecraftSessionFromMicrosoftAccessToken(accessToken) {
     method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ Properties: { SandboxId: 'RETAIL', UserTokens: [xblData.Token] }, RelyingParty: 'rp://api.minecraftservices.com/', TokenType: 'JWT' })
   });
-  const xstsData = await xsts.json();
+  const xstsData = await readJsonResponse(xsts, 'Xbox XSTS authentication');
   if (!xsts.ok || !xstsData.Token) throw new Error(xstsData.XErr ? `Xbox XSTS authentication failed (${xstsData.XErr})` : 'Xbox XSTS authentication failed');
   const mc = await fetch('https://api.minecraftservices.com/authentication/login_with_xbox', {
     method: 'POST', headers: { 'content-type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsData.Token}`, ensureLegacyEnabled: true })
   });
-  const mcData = await mc.json();
+  const mcData = await readJsonResponse(mc, 'Minecraft authentication');
   if (!mc.ok || !mcData.access_token) throw new Error(mcData.errorMessage || mcData.error || 'Minecraft authentication failed');
   const profileResponse = await fetch('https://api.minecraftservices.com/minecraft/profile', { headers: { Authorization: `Bearer ${mcData.access_token}` } });
-  const profile = await profileResponse.json();
+  const profile = await readJsonResponse(profileResponse, 'Minecraft Java profile');
   if (!profileResponse.ok || !profile.id || !profile.name) throw new Error(profile.errorMessage || profile.error || 'Minecraft Java profile not found');
   return { accessToken: mcData.access_token, username: profile.name, uuid: profile.id, expiresIn: Number(mcData.expires_in || 86400) };
 }
