@@ -367,6 +367,9 @@ app.post('/v1/admin/email/request', async (req, res) => {
 
 app.post('/v1/admin/email/verify', (req, res) => {
   cleanupState();
+  const challengeId = String(req.body?.challengeId || '');
+  const challenge = emailAuthChallenges.get(challengeId);
+  if (!challenge || challenge.expiresAt <= Date.now()) return res.status(401).json({ error: 'De loginbevestiging is verlopen. Log opnieuw in.' });
   const email = normalizeEmail(req.body?.email);
   const code = String(req.body?.code || '').replace(/\D/g, '').slice(0, 6);
   if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });
