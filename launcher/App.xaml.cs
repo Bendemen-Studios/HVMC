@@ -10,7 +10,7 @@ public partial class App : System.Windows.Application
 {
     private const string AppName = "HVMC School Launcher";
     private const string Publisher = "Bendemen Studios";
-    private const string AppVersion = "1.3.0";
+    private const string AppVersion = "1.4.0";
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
