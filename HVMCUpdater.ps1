@@ -20,7 +20,7 @@ function Log([string]$Message) {
 }
 
 function Get-GitHubHeaders {
-    @{ 'User-Agent' = 'HVMC-Updater'; 'Accept' = 'application/vnd.github+json' }
+    @{ 'User-Agent' = 'HVMC-School-Launcher'; 'Accept' = 'application/vnd.github+json' }
 }
 
 function Get-RemoteFiles {
@@ -95,6 +95,28 @@ function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
     } catch { return $false }
 }
 
+function Find-Java {
+    $runtimeRoot = Join-Path $MinecraftDir 'runtime'
+    if (Test-Path -LiteralPath $runtimeRoot) {
+        $runtimeJava = Get-ChildItem -LiteralPath $runtimeRoot -Filter 'java.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($runtimeJava) { return $runtimeJava.FullName }
+    }
+
+    $javaCommand = Get-Command java.exe -ErrorAction SilentlyContinue
+    if ($javaCommand) { return $javaCommand.Source }
+
+    $common = @(
+        (Join-Path ${env:ProgramFiles} 'Java\*\bin\java.exe'),
+        (Join-Path ${env:ProgramFiles} 'Eclipse Adoptium\*\bin\java.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Java\*\bin\java.exe')
+    )
+    foreach ($pattern in $common) {
+        $candidate = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($candidate) { return $candidate.FullName }
+    }
+    return $null
+}
+
 function Ensure-Fabric {
     $target = Join-Path $MinecraftDir "versions\fabric-loader-$FabricLoader-$McVersion\fabric-loader-$FabricLoader-$McVersion.json"
     if (Test-Path -LiteralPath $target) {
@@ -104,23 +126,26 @@ function Ensure-Fabric {
 
     Log "Fabric $FabricLoader voor Minecraft $McVersion installeren..."
     try {
-        $meta = Invoke-RestMethod -Uri 'https://meta.fabricmc.net/v2/versions/installer' -Headers @{ 'User-Agent'='HVMC-Updater'; 'Accept'='application/json' } -TimeoutSec 30
+        $meta = Invoke-RestMethod -Uri 'https://meta.fabricmc.net/v2/versions/installer' -Headers @{ 'User-Agent'='HVMC-School-Launcher'; 'Accept'='application/json' } -TimeoutSec 30
         $installer = @($meta | Where-Object { $_.stable -eq $true -and $_.url }) | Select-Object -First 1
         if (-not $installer) { throw 'Geen stabiele Fabric installer gevonden.' }
 
-        $installerUrl = [string]$installer.url
-        $installerVersion = [string]$installer.version
-        Log "Fabric installer $installerVersion gevonden."
-
-        $windowsUrl = if ($installerUrl -match '\.jar$') { $installerUrl -replace '\.jar$','.exe' } else { $installerUrl }
-        $installerPath = Join-Path $Root 'fabric-installer.exe'
-        Download $windowsUrl $installerPath
-
-        $proc = Start-Process -FilePath $installerPath -ArgumentList @('client','-dir',$MinecraftDir,'-mcversion',$McVersion,'-loader',$FabricLoader) -Wait -PassThru -WindowStyle Hidden
-        if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $target)) {
-            throw "Fabric installatie mislukt (exitcode $($proc.ExitCode))."
+        $javaPath = Find-Java
+        if (-not $javaPath) {
+            throw 'Java runtime niet gevonden. Minecraft moet eerst eenmaal door de launcher worden voorbereid.'
         }
-        Log 'Fabric installatie voltooid.'
+
+        $installerVersion = [string]$installer.version
+        $installerPath = Join-Path $Root "fabric-installer-$installerVersion.jar"
+        Download ([string]$installer.url) $installerPath
+        Log "Fabric installer $installerVersion gedownload als Universal JAR."
+
+        $args = @('-jar', $installerPath, 'client', '-dir', $MinecraftDir, '-mcversion', $McVersion, '-loader', $FabricLoader, '-noprofile')
+        $proc = Start-Process -FilePath $javaPath -ArgumentList $args -Wait -PassThru -WindowStyle Hidden
+        if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $target)) {
+            throw "Fabric CLI-installatie mislukt (exitcode $($proc.ExitCode))."
+        }
+        Log 'Fabric CLI-installatie voltooid.'
     }
     catch {
         throw "Fabric installeren mislukt: $($_.Exception.Message)"
@@ -128,8 +153,8 @@ function Ensure-Fabric {
 }
 
 try {
-    Log 'HVMC updater gestart.'
-    $versionResponse = Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{ 'User-Agent'='HVMC-Updater' } -UseBasicParsing -TimeoutSec 20
+    Log 'HVMC School Launcher updater gestart.'
+    $versionResponse = Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{ 'User-Agent'='HVMC-School-Launcher' } -UseBasicParsing -TimeoutSec 20
     $remoteVersion = ([string]$versionResponse.Content).Trim()
     if ([string]::IsNullOrWhiteSpace($remoteVersion)) { throw 'version.txt is leeg.' }
     Log "Beschikbare HVMC versie: $remoteVersion"
