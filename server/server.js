@@ -172,7 +172,7 @@ function verifyPassword(password) {
   } catch { return false; }
 }
 function getSessionToken(req) {
-  return String(req.headers.authorization || '').replace(/^Bearer\\s+/i, '').trim();
+  return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
 }
 function isAdmin(req) {
   const legacy = String(req.headers['x-admin-token'] || '');
