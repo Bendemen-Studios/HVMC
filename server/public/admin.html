@@ -21,11 +21,11 @@ main{position:relative;max-width:1180px;width:100%;margin:0 auto;padding:34px 20
   <section id="passwordPanel" class="panel">
     <h2>Stap 1 — Beheerderslogin</h2>
     <div class="row"><input id="username" autocomplete="username" placeholder="Gebruikersnaam" style="flex:1"><input id="password" type="password" autocomplete="current-password" placeholder="Wachtwoord" style="flex:1"><button id="loginBtn">Inloggen</button></div>
-    <div id="loginMsg" class="msg">Log in met je gebruikersnaam en wachtwoord.</div>
+    <div id="loginMsg" class="msg"></div>
   </section>
   <section id="emailPanel" class="panel hidden">
     <h2>Stap 2 — E-mailcontrole</h2>
-    <div class="msg">Je wachtwoord is goedgekeurd. Kies een toegestaan e-mailadres en ontvang een eenmalige code.</div>
+    <div class="msg"></div>
     <div class="row" style="margin-top:12px"><select id="email" autocomplete="email" style="flex:1"><option value="">Kies e-mailadres…</option><option value="info@bendemen.nl">info@bendemen.nl</option><option value="bendemenbv@gmail.com">bendemenbv@gmail.com</option></select><button id="sendEmailBtn">Code sturen</button></div>
     <div class="emailRow" style="margin-top:10px"><input id="emailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-cijferige code"><button id="verifyEmailBtn">Bevestigen</button></div>
     <div id="emailMsg" class="msg">De code is 10 minuten geldig.</div>

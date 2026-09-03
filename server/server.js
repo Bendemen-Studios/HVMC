@@ -71,9 +71,9 @@ async function sendAdminEmailCode(to, code) {
   await getEmailTransporter().sendMail({
     from: EMAIL_FROM,
     to,
-    subject: 'HVMC School Launcher – inlogcode',
-    text: `Je HVMC School Launcher inlogcode is: ${code}\n\nDeze code is 10 minuten geldig. Als je dit niet hebt aangevraagd, kun je deze e-mail negeren.`,
-    html: `<div style="font-family:Arial,sans-serif;max-width:520px"><h2>HVMC School Launcher</h2><p>Je inlogcode is:</p><p style="font-size:32px;font-weight:800;letter-spacing:8px">${code}</p><p>Deze code is 10 minuten geldig.</p><p>Heb je dit niet aangevraagd? Dan kun je deze e-mail negeren.</p></div>`
+    subject: 'HVMC Account Dashboard',
+    text: `Je HVMC Account Dashboard-verificatiecode is: ${code}\n\nDeze code is 10 minuten geldig. Als je dit niet hebt aangevraagd, kun je deze e-mail negeren.`,
+    html: `<div style="font-family:Arial,sans-serif;max-width:520px"><h2>HVMC Account Dashboard</h2><p>Je inlogcode is:</p><p style="font-size:32px;font-weight:800;letter-spacing:8px">${code}</p><p>Deze code is 10 minuten geldig.</p><p>Heb je dit niet aangevraagd? Dan kun je deze e-mail negeren.</p></div>`
   });
 }
 
@@ -124,6 +124,7 @@ if (!initialized) {
 const sessions = new Map();
 const loginAttempts = new Map();
 const emailAuthCodes = new Map();
+const emailAuthChallenges = new Map();
 const emailAuthSendState = new Map();
 const linkAttempts = new Map();
 const launcherRate = new Map();
@@ -142,7 +143,8 @@ function cleanupState() {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
   for (const [ip, info] of loginAttempts) if (info.resetAt <= now) loginAttempts.delete(ip);
-  for (const [email, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(email);
+  for (const [challengeId, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(challengeId);
+  for (const [challengeId, info] of emailAuthChallenges) if (info.expiresAt <= now) emailAuthChallenges.delete(challengeId);
   for (const [key, info] of emailAuthSendState) if (info.resetAt <= now) emailAuthSendState.delete(key);
   for (const [id, attempt] of linkAttempts) if (attempt.expiresAt <= now) linkAttempts.delete(id);
   cleanupExpired();
@@ -335,24 +337,30 @@ app.post('/v1/admin/login', (req, res) => {
   const password = String(req.body?.password || '');
   if (!safeEqual(username, ADMIN_USERNAME) || !verifyPassword(password)) { attempt.count += 1; loginAttempts.set(ip, attempt); return res.status(401).json({ error: 'Ongeldige gebruikersnaam of wachtwoord.' }); }
   loginAttempts.delete(ip);
-  createAdminSession(res);
+  const challengeId = crypto.randomUUID();
+  const expiresAt = Date.now() + EMAIL_AUTH_TTL_MS;
+  emailAuthChallenges.set(challengeId, { username: ADMIN_USERNAME, expiresAt });
+  return res.json({ ok: true, requiresEmailCode: true, challengeId, expiresAt: new Date(expiresAt).toISOString(), allowedEmails: [...EMAIL_AUTH_ALLOWED] });
 });
 
 app.post('/v1/admin/email/request', async (req, res) => {
   cleanupState();
+  const challengeId = String(req.body?.challengeId || '');
   const email = normalizeEmail(req.body?.email);
+  const challenge = emailAuthChallenges.get(challengeId);
+  if (!challenge || challenge.expiresAt <= Date.now()) return res.status(400).json({ error: 'De loginbevestiging is verlopen. Log opnieuw in.' });
   if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });
   const key = emailRateKey(req, email);
   const current = emailAuthSendState.get(key);
   if (current && current.resetAt > Date.now()) return res.status(429).json({ error: 'Vraag over een minuut een nieuwe code aan.' });
   const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
-  emailAuthCodes.set(email, { hash: hashAuthCode(code), expiresAt: Date.now() + EMAIL_AUTH_TTL_MS, attempts: 0 });
+  emailAuthCodes.set(challengeId, { email, hash: hashAuthCode(code), expiresAt: Date.now() + EMAIL_AUTH_TTL_MS, attempts: 0 });
   emailAuthSendState.set(key, { resetAt: Date.now() + EMAIL_AUTH_COOLDOWN_MS });
   try {
     await sendAdminEmailCode(email, code);
     res.json({ ok: true, message: 'Inlogcode verzonden naar het opgegeven e-mailadres.' });
   } catch (err) {
-    emailAuthCodes.delete(email);
+    emailAuthCodes.delete(challengeId);
     res.status(502).json({ error: err.message || 'De e-mail kon niet worden verzonden.' });
   }
 });
@@ -364,16 +372,17 @@ app.post('/v1/admin/email/verify', (req, res) => {
   if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });
   const stored = emailAuthCodes.get(email);
   if (!stored || stored.expiresAt <= Date.now()) {
-    emailAuthCodes.delete(email);
+    emailAuthCodes.delete(challengeId);
     return res.status(401).json({ error: 'De code is verlopen of bestaat niet meer.' });
   }
   if (stored.attempts >= EMAIL_AUTH_MAX_ATTEMPTS) {
-    emailAuthCodes.delete(email);
+    emailAuthCodes.delete(challengeId);
     return res.status(429).json({ error: 'Te veel onjuiste codes. Vraag een nieuwe code aan.' });
   }
   stored.attempts += 1;
   if (code.length !== 6 || !safeEqual(stored.hash, hashAuthCode(code))) return res.status(401).json({ error: 'Onjuiste inlogcode.' });
-  emailAuthCodes.delete(email);
+  emailAuthCodes.delete(challengeId);
+  emailAuthChallenges.delete(challengeId);
   createAdminSession(res);
 });
 
