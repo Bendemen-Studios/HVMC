@@ -370,7 +370,7 @@ app.post('/v1/admin/email/verify', (req, res) => {
   const email = normalizeEmail(req.body?.email);
   const code = String(req.body?.code || '').replace(/\D/g, '').slice(0, 6);
   if (!EMAIL_AUTH_ALLOWED.has(email)) return res.status(403).json({ error: 'Dit e-mailadres is niet toegestaan voor admin-login.' });
-  const stored = emailAuthCodes.get(email);
+  const stored = emailAuthCodes.get(challengeId);
   if (!stored || stored.expiresAt <= Date.now()) {
     emailAuthCodes.delete(challengeId);
     return res.status(401).json({ error: 'De code is verlopen of bestaat niet meer.' });
