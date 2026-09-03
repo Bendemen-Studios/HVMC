@@ -8,9 +8,9 @@ namespace HVMCLauncher;
 
 public partial class App : System.Windows.Application
 {
-    private const string AppName = "HVMC";
+    private const string AppName = "HVMC School Launcher";
     private const string Publisher = "Bendemen Studios";
-    private const string AppVersion = "1.0.0";
+    private const string AppVersion = "1.2.0";
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -39,8 +39,6 @@ public partial class App : System.Windows.Application
             var currentPath = Path.GetFullPath(currentExe);
             var installedPath = Path.GetFullPath(InstalledExe);
 
-            // First launch: install the executable into a stable per-user application
-            // location, register it with Windows and create Start-menu/Desktop shortcuts.
             if (!string.Equals(currentPath, installedPath, StringComparison.OrdinalIgnoreCase))
             {
                 Directory.CreateDirectory(InstallDir);
@@ -89,10 +87,7 @@ public partial class App : System.Windows.Application
             uninstall.SetValue("NoRepair", 1, RegistryValueKind.DWord);
             uninstall.SetValue("UninstallString", $"\"{InstalledExe}\" --uninstall");
         }
-        catch
-        {
-            // Windows app registration is best-effort and must not block startup.
-        }
+        catch { }
     }
 
     private static void Uninstall()
@@ -101,16 +96,16 @@ public partial class App : System.Windows.Application
         {
             var startMenuShortcut = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-                "Programs", "HVMC", "HVMC.lnk");
+                "Programs", "HVMC School Launcher", "HVMC School Launcher.lnk");
             var desktopShortcut = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                "HVMC.lnk");
+                "HVMC School Launcher.lnk");
 
             File.Delete(startMenuShortcut);
             File.Delete(desktopShortcut);
             Directory.Delete(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-                "Programs", "HVMC"), true);
+                "Programs", "HVMC School Launcher"), true);
         }
         catch { }
 
@@ -145,18 +140,15 @@ public partial class App : System.Windows.Application
         {
             var startMenuDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-                "Programs", "HVMC");
+                "Programs", "HVMC School Launcher");
             Directory.CreateDirectory(startMenuDir);
 
-            WriteShortcut(Path.Combine(startMenuDir, "HVMC.lnk"));
+            WriteShortcut(Path.Combine(startMenuDir, "HVMC School Launcher.lnk"));
             WriteShortcut(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                "HVMC.lnk"));
+                "HVMC School Launcher.lnk"));
         }
-        catch
-        {
-            // Shortcut creation must never prevent the launcher from opening.
-        }
+        catch { }
     }
 
     private static void WriteShortcut(string shortcutPath)
@@ -164,7 +156,7 @@ public partial class App : System.Windows.Application
         var target = Ps(InstalledExe);
         var workingDir = Ps(InstallDir);
         var link = Ps(shortcutPath);
-        var description = Ps("HVMC - Hero's Vault MC");
+        var description = Ps("HVMC School Launcher - Hero's Vault MC");
 
         var script = "$shell=New-Object -ComObject WScript.Shell;" +
                      $"$shortcut=$shell.CreateShortcut('{link}');" +
