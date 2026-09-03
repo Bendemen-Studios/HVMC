@@ -1,0 +1,58 @@
+name: Fix Xbox Live OAuth
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, '[skip-xbox-fix]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fix OAuth configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('server/server.js')
+          text = p.read_text(encoding='utf-8')
+          old_authority = "const MS_AUTHORITY = 'https://login.microsoftonline.com/common';"
+          new_authority = "const MS_AUTHORITY = 'https://login.microsoftonline.com/consumers';"
+          old_scope = "const MS_SCOPE = 'openid profile offline_access XboxLive.signin';"
+          new_scope = "const MS_SCOPE = 'offline_access XboxLive.signin';"
+          changed = False
+          if old_authority in text:
+              text = text.replace(old_authority, new_authority, 1)
+              changed = True
+          if old_scope in text:
+              text = text.replace(old_scope, new_scope, 1)
+              changed = True
+          if changed:
+              p.write_text(text, encoding='utf-8')
+          PY
+
+          if ! grep -q "https://login.microsoftonline.com/consumers" server/server.js || ! grep -q "const MS_SCOPE = 'offline_access XboxLive.signin';" server/server.js; then
+            echo 'OAuth configuration was not updated as expected.'
+            exit 1
+          fi
+
+      - name: Commit fix and remove one-off workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/fix-xbox-auth.yml
+          git add server/server.js .github/workflows/fix-xbox-auth.yml
+          git commit -m "fix Xbox Live OAuth authority and scope [skip-xbox-fix]"
+          git push origin HEAD:main
