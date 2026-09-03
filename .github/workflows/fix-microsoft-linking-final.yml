@@ -1,0 +1,102 @@
+name: Fix Microsoft linking final
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Repair server auth code
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('server/server.js')
+          s = p.read_text(encoding='utf-8')
+
+          # Use the consumer tenant and request both identity claims and Xbox access.
+          s, n = re.subn(
+              r"const MS_AUTHORITY = '[^']+';",
+              "const MS_AUTHORITY = 'https://login.microsoftonline.com/consumers';",
+              s,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f'MS_AUTHORITY replacement count={n}')
+
+          s, n = re.subn(
+              r"const MS_SCOPE = '[^']+';",
+              "const MS_SCOPE = 'openid profile offline_access XboxLive.signin';",
+              s,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f'MS_SCOPE replacement count={n}')
+
+          start_token = 'async function profileFromAccessToken(accessToken, idToken) {'
+          end_token = '\n\nasync function refreshMicrosoftAccessToken'
+          start = s.find(start_token)
+          end = s.find(end_token, start if start >= 0 else 0)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate profileFromAccessToken function')
+
+          new_fn = '''async function profileFromAccessToken(accessToken, idToken) {
+  // Device-code login with the openid/profile scopes returns an ID token.
+  // Use its verified OIDC claims for stable Microsoft account identity.
+  if (!idToken) return null;
+  try {
+    const jwks = createRemoteJWKSet(new URL(`${MS_AUTHORITY}/discovery/v2.0/keys`));
+    const { payload } = await jwtVerify(String(idToken), jwks, {
+      audience: MICROSOFT_CLIENT_ID,
+      algorithms: ['RS256']
+    });
+    const oid = String(payload.oid || payload.sub || '');
+    if (!oid) return null;
+    return {
+      id: oid,
+      displayName: String(payload.name || ''),
+      userPrincipalName: String(payload.preferred_username || payload.email || ''),
+      mail: String(payload.email || '')
+    };
+  } catch {
+    return null;
+  }
+}'''
+
+          s = s[:start] + new_fn + s[end:]
+          p.write_text(s, encoding='utf-8')
+
+      - name: Validate server
+        run: node --check server/server.js
+
+      - name: Remove obsolete repair workflows and commit
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f \
+            .github/workflows/fix-ms-linking.yml \
+            .github/workflows/fix-ms-auth-final.yml \
+            .github/workflows/fix-consumer-identity.yml \
+            .github/workflows/repair-ms-identity.yml \
+            .github/workflows/fix-upstream-json.yml \
+            .github/workflows/repair-ms-identity.yml \
+            2>/dev/null || true
+          git add server/server.js
+          git add -u .github/workflows
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix Microsoft consumer account identification and clean repair workflows"
+          git push origin main
