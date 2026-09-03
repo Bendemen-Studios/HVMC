@@ -37,6 +37,26 @@ const cleanup = () => {
 };
 setInterval(cleanup, 60_000).unref();
 
+// Compatibility fix for the current admin-session parser: normalize only
+// admin requests so their Bearer token reaches the session map unchanged.
+// Do not touch launcher/Microsoft bearer tokens used by other endpoints.
+const originalUse = express.application.use;
+express.application.use = function patchedUse(...args) {
+  if (!this.__hvmcAdminAuthBridgeInstalled) {
+    this.__hvmcAdminAuthBridgeInstalled = true;
+    originalUse.call(this, (req, _res, next) => {
+      if (String(req.path || '').startsWith('/v1/admin/') || req.path === '/v1/status') {
+        const authorization = String(req.headers.authorization || '');
+        if (/^Bearer\s+/i.test(authorization)) {
+          req.headers.authorization = authorization.replace(/^Bearer\s+/i, '').trim();
+        }
+      }
+      next();
+    });
+  }
+  return originalUse.apply(this, args);
+};
+
 const originalPost = express.application.post;
 express.application.post = function patchedPost(path, ...handlers) {
   if (path !== '/v1/admin/login') return originalPost.call(this, path, ...handlers);
