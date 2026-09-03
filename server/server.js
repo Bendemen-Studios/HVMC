@@ -28,7 +28,7 @@ const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'bendemen');
 const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || '');
 const DEFAULT_LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 3600);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/consumers';
-const MS_SCOPE = 'offline_access XboxLive.signin';
+const MS_SCOPE = 'openid profile offline_access XboxLive.signin';
 const POOL_ENCRYPTION_KEY_B64 = String(process.env.POOL_ENCRYPTION_KEY || '');
 
 if (!MICROSOFT_CLIENT_ID) throw new Error('MICROSOFT_CLIENT_ID is required');
