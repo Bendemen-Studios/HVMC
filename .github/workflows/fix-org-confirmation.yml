@@ -1,0 +1,52 @@
+name: Fix organization confirmation
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update organization confirmation
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('server/public/pc-admin.html')
+          s = p.read_text(encoding='utf-8')
+          pattern = r"async function deleteOrg\(id,name,event\)\{.*?\}\nasync function updatePc"
+          replacement = '''async function deleteOrg(id,name,event){
+    if(event)event.stopPropagation();
+    const confirmed=confirm(`Weet je zeker dat je deze organisatie wilt verwijderen?\\n\\nOrganisatie: "${name}"\\n\\nDe gekoppelde PC's blijven bestaan, maar worden losgekoppeld van deze organisatie.`);
+    if(!confirmed)return;
+    try{
+      await api('/v1/admin/organizations/'+id,{method:'DELETE'});
+      if(Number(selectedOrgId)===Number(id))selectedOrgId=null;
+      await loadAll({manual:true});
+    }catch(e){msg(e.message)}
+  }
+async function updatePc'''
+          s2, n = re.subn(pattern, replacement, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'Could not locate deleteOrg function: {n}')
+          p.write_text(s2, encoding='utf-8')
+
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/public/pc-admin.html
+          git commit -m "Improve organization deletion confirmation" || true
+          git rm -f .github/workflows/fix-org-confirmation.yml || true
+          git commit -m "Remove temporary organization confirmation workflow" || true
+          git push origin main || true
