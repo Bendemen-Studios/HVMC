@@ -16,7 +16,7 @@ const smtpSecure = env('EMAIL_SMTP_SECURE', 'false').toLowerCase() === 'true';
 const smtpUser = env('EMAIL_SMTP_USER');
 const smtpPassword = env('EMAIL_SMTP_PASSWORD');
 const emailFrom = env('EMAIL_FROM', 'automail@hvmc.nl');
-const emailFromName = env('EMAIL_FROM_NAME', 'HVMC');
+const emailFromName = env('EMAIL_FROM_NAME', 'HVMC Account Dashboard');
 
 let transporter = null;
 if (smtpHost) {
@@ -114,9 +114,9 @@ express.application.listen = function patchedListen(...args) {
       await transporter.sendMail({
         from: { name: emailFromName, address: emailFrom },
         to: email,
-        subject: 'HVMC beheerderslogin',
-        text: `Je HVMC verificatiecode is ${code}. Deze code is 10 minuten geldig.`,
-        html: `<p>Je HVMC verificatiecode is:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p><p>Deze code is 10 minuten geldig.</p>`
+        subject: 'HVMC Account Dashboard',
+        text: `Je HVMC Account Dashboard-verificatiecode is ${code}. Deze code is 10 minuten geldig.`,
+        html: `<p>Je HVMC Account Dashboard-verificatiecode is:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p><p>Deze code is 10 minuten geldig.</p>`
       });
       res.json({ ok: true, expiresAt: new Date(Date.now() + REQUEST_TTL_MS).toISOString() });
     } catch (error) {
