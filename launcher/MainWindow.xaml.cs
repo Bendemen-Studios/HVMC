@@ -62,7 +62,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Controle mislukt.");
-            WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowError("Controle mislukt", ex);
             ExitButton.IsEnabled = true;
         }
     }
@@ -111,7 +111,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Pc-autorisatie mislukt.");
-            WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowError("Pc-autorisatie mislukt", ex);
         }
         finally { AuthorizeButton.IsEnabled = true; }
     }
@@ -166,7 +166,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Starten mislukt.");
-            WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowError("Starten mislukt", ex);
         }
         finally
         {
@@ -312,14 +312,69 @@ public partial class MainWindow : Window
 
     private async Task<LeaseResponse> AcquireLeaseAsync(string clientId, string deviceToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/acquire");
-        request.Headers.Add("x-hvmc-client-id", clientId);
-        request.Headers.Add("x-hvmc-device-token", deviceToken);
-        request.Content = new StringContent(JsonSerializer.Serialize(new { clientId }), Encoding.UTF8, "application/json");
-        using var response = await _http.SendAsync(request);
-        var json = await response.Content.ReadAsStringAsync();
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
-        return JsonSerializer.Deserialize<LeaseResponse>(json, JsonOptions) ?? throw new InvalidOperationException("Ongeldige pool-response.");
+        const int maxAttempts = 2;
+        string? lastError = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/acquire");
+                request.Headers.Add("x-hvmc-client-id", clientId);
+                request.Headers.Add("x-hvmc-device-token", deviceToken);
+                request.Headers.Accept.ParseAdd("application/json");
+                request.Content = new StringContent(JsonSerializer.Serialize(new { clientId }), Encoding.UTF8, "application/json");
+
+                using var response = await _http.SendAsync(request);
+                var body = await response.Content.ReadAsStringAsync();
+                var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
+
+                if (string.IsNullOrWhiteSpace(body))
+                {
+                    lastError = $"De accountserver gaf een lege response terug (HTTP {(int)response.StatusCode} {response.StatusCode}).";
+                }
+                else if (!response.IsSuccessStatusCode)
+                {
+                    lastError = GetError(body);
+                }
+                else
+                {
+                    try
+                    {
+                        var lease = JsonSerializer.Deserialize<LeaseResponse>(body, JsonOptions);
+                        if (lease is null) throw new InvalidOperationException("De accountserver gaf geen accountgegevens terug.");
+                        if (string.IsNullOrWhiteSpace(lease.LeaseId) || string.IsNullOrWhiteSpace(lease.Username) || string.IsNullOrWhiteSpace(lease.MinecraftAccessToken))
+                            throw new InvalidOperationException("De accountserver gaf onvolledige accountgegevens terug.");
+                        return lease;
+                    }
+                    catch (JsonException)
+                    {
+                        var preview = body.Length > 500 ? body[..500] + "..." : body;
+                        throw new InvalidOperationException($"Ongeldige JSON van de accountserver (HTTP {(int)response.StatusCode}, {contentType}). Response: {preview}");
+                    }
+                }
+            }
+            catch (HttpRequestException ex)
+            {
+                lastError = $"Accountserver niet bereikbaar: {ex.Message}";
+            }
+            catch (TaskCanceledException ex)
+            {
+                lastError = $"Time-out bij de accountserver: {ex.Message}";
+            }
+            catch (InvalidOperationException ex)
+            {
+                lastError = ex.Message;
+            }
+
+            if (attempt < maxAttempts)
+            {
+                SetStatus("Accountserver reageerde niet goed. Opnieuw proberen...");
+                await Task.Delay(1200);
+            }
+        }
+
+        throw new InvalidOperationException(lastError ?? "Onbekende fout bij het ophalen van een Minecraft-account.");
     }
 
     private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
@@ -385,10 +440,23 @@ public partial class MainWindow : Window
 
     private void SaveDeviceToken(string token) => File.WriteAllText(Path.Combine(_root, "device-token.txt"), token);
     private void SetStatus(string message) => StatusText.Text = message;
+
     private static string GetError(string json)
     {
-        try { return JsonSerializer.Deserialize<ApiError>(json, JsonOptions)?.Error ?? json; }
-        catch { return string.IsNullOrWhiteSpace(json) ? "Onbekende fout." : json; }
+        if (string.IsNullOrWhiteSpace(json)) return "De server gaf geen foutmelding terug.";
+        try
+        {
+            var error = JsonSerializer.Deserialize<ApiError>(json, JsonOptions)?.Error;
+            if (!string.IsNullOrWhiteSpace(error)) return error;
+        }
+        catch (JsonException) { }
+        return json.Trim();
+    }
+
+    private void ShowError(string title, Exception ex)
+    {
+        var message = ex.Message;
+        WpfMessageBox.Show(this, message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private sealed record LeaseResponse(string LeaseId,string AccountId,string AccountName,string? MicrosoftUsername,string Username,string Uuid,string MinecraftAccessToken,int ExpiresIn,string ExpiresAt,string? Xuid);
