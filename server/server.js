@@ -28,7 +28,7 @@ const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'bendemen');
 const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || '');
 const DEFAULT_LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 3600);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/common';
-const MS_SCOPE = 'openid profile offline_access https://graph.microsoft.com/User.Read';
+const MS_SCOPE = 'openid profile offline_access XboxLive.signin';
 const POOL_ENCRYPTION_KEY_B64 = String(process.env.POOL_ENCRYPTION_KEY || '');
 
 if (!MICROSOFT_CLIENT_ID) throw new Error('MICROSOFT_CLIENT_ID is required');
@@ -380,9 +380,6 @@ app.post('/v1/admin/accounts/:id/unlink', (req, res) => {
   res.json({ ok: true });
 });
 
-// New launcher API: no Microsoft login on the youth PC. The server picks the first free linked account,
-// refreshes Microsoft silently, converts it through Xbox Live/XSTS/Minecraft Services, and returns only
-// a short-lived Minecraft session token to the launcher.
 app.post('/v1/launcher/lease/acquire', async (req, res) => {
   if (!launcherRateLimit(req, res)) return;
   cleanupExpired();
@@ -413,7 +410,6 @@ app.post('/v1/launcher/lease/acquire', async (req, res) => {
     const refreshToken = decryptSecret(lease.encryptedRefreshToken);
     const token = await refreshMicrosoftAccessToken(refreshToken);
     const minecraft = await minecraftSessionFromMicrosoftAccessToken(token.access_token);
-    // Microsoft may rotate the refresh token. Persist the replacement before returning the session.
     if (token.refresh_token) db.prepare('UPDATE accounts SET microsoft_refresh_token_enc = ? WHERE id = ?').run(encryptSecret(token.refresh_token), lease.accountId);
     res.json({
       leaseId: lease.leaseId,
@@ -466,7 +462,7 @@ app.post('/v1/lease/acquire', async (req, res) => {
     const active = db.prepare('SELECT * FROM leases WHERE account_id = ?').get(account.id);
     if (active) return res.status(409).json({ error: 'Account is al in gebruik.', accountName: account.label });
     const now = new Date(); const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000); const leaseId = crypto.randomUUID();
-    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)').run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
+    db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)').run(leaseId,account.id,clientId,now.toISOString(),now.toISOString(),expires.toISOString());
     res.json({ leaseId, accountId: account.slot, accountName: account.label, expiresAt: expires.toISOString() });
   } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
@@ -488,12 +484,4 @@ app.post('/v1/lease/release', async (req, res) => {
   } catch (err) { res.status(err.status || 500).json({ error: err.message || 'internal error' }); }
 });
 
-app.post('/v1/admin/reset-mapping', (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  db.prepare('DELETE FROM leases').run();
-  db.prepare('UPDATE accounts SET microsoft_oid=NULL,microsoft_username=NULL,microsoft_refresh_token_enc=NULL').run();
-  res.json({ ok: true });
-});
-
-app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: 'internal error' }); });
-app.listen(PORT, '127.0.0.1', () => console.log(`HVMC account pool listening on 127.0.0.1:${PORT}`));
+app.listen(PORT, '127.0.0.1', () => console.log(`HVMC account-pool listening on 127.0.0.1:${PORT}`));
