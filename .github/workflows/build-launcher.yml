@@ -3,6 +3,8 @@ name: Build HVMC Launcher
 on:
   push:
     branches: [ main ]
+    tags:
+      - 'v*.*'
     paths:
       - 'launcher/**'
       - 'HVMCUpdater.ps1'
@@ -11,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -19,16 +21,32 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
       - name: Restore launcher
         run: dotnet restore launcher/HVMCLauncher.csproj
+
       - name: Publish launcher
         run: dotnet publish launcher/HVMCLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/HVMCLauncher
+
       - name: Upload launcher artifact
         uses: actions/upload-artifact@v4
         with:
           name: HVMCLauncher-win-x64
           path: artifacts/HVMCLauncher/HVMCLauncher.exe
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: HVMC Release ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: false
+          files: artifacts/HVMCLauncher/HVMCLauncher.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
