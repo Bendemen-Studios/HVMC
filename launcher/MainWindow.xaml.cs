@@ -19,7 +19,7 @@ public partial class MainWindow : Window
     private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "1.21.11";
     private const string FabricVersion = "0.18.1";
-    private const string LauncherVersion = "1.2.0";
+    private const string LauncherVersion = "1.3.0";
     private const int MaximumRamMb = 4096;
     private const int PcHeartbeatSeconds = 30;
 
@@ -51,7 +51,7 @@ public partial class MainWindow : Window
         {
             _clientId = GetStableClientId();
             _deviceToken = GetDeviceToken();
-            SetStatus("HVMC controleren...");
+            SetStatus("HVMC School Launcher controleren...");
             if (await CheckForLauncherUpdateAsync()) return;
             if (!await EnsurePcAuthorizedAsync()) return;
             await SendPcHeartbeatAsync();
@@ -123,8 +123,16 @@ public partial class MainWindow : Window
         try
         {
             if (!await EnsurePcAuthorizedAsync()) { ExitButton.IsEnabled = true; return; }
-            SetStatus("HVMC controleren...");
+
+            var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
+            var minecraftLauncher = new MinecraftLauncher(minecraftPath);
+
+            SetStatus("Minecraft voorbereiden...");
+            await minecraftLauncher.InstallAsync(MinecraftVersion);
+
+            SetStatus("HVMC content synchroniseren...");
             await RunUpdaterAsync();
+
             _clientId ??= GetStableClientId();
             _deviceToken ??= GetDeviceToken();
             if (string.IsNullOrWhiteSpace(_deviceToken)) throw new InvalidOperationException("Deze pc is niet geautoriseerd.");
@@ -134,17 +142,13 @@ public partial class MainWindow : Window
             _leaseId = lease.LeaseId;
             SetStatus($"{lease.AccountName} geselecteerd.");
 
-            var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
-            var minecraftLauncher = new MinecraftLauncher(minecraftPath);
             var session = new MSession { Username = lease.Username, AccessToken = lease.MinecraftAccessToken, UUID = lease.Uuid, Xuid = lease.Xuid ?? string.Empty };
-            SetStatus("Minecraft controleren...");
-            await minecraftLauncher.InstallAsync(MinecraftVersion);
-
             var display = Forms.Screen.PrimaryScreen?.Bounds;
             var width = display?.Width ?? 1920;
             var height = display?.Height ?? 1080;
             var fabricProfile = $"fabric-loader-{FabricVersion}-{MinecraftVersion}";
-            SetStatus($"Minecraft starten op {width}x{height}...");
+
+            SetStatus($"Fabric voorbereiden en Minecraft starten op {width}x{height}...");
             var process = await minecraftLauncher.InstallAndBuildProcessAsync(fabricProfile, new MLaunchOption
             {
                 Session = session,
@@ -213,15 +217,29 @@ public partial class MainWindow : Window
     {
         var currentExe = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe)) return false;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
         request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
+        request.Headers.Accept.ParseAdd("application/vnd.github+json");
         using var response = await _http.SendAsync(request);
         if (!response.IsSuccessStatusCode) return false;
+
         var json = await response.Content.ReadAsStringAsync();
         var release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
+        var tag = release?.TagName?.Trim();
+        if (string.IsNullOrWhiteSpace(tag)) return false;
+
+        var remoteText = tag.TrimStart('v', 'V');
+        if (Version.TryParse(remoteText, out var remoteVersion) && Version.TryParse(LauncherVersion, out var currentVersion))
+        {
+            SetStatus($"Launcher controleren: huidig {currentVersion}, beschikbaar {remoteVersion}...");
+            if (remoteVersion <= currentVersion) return false;
+        }
+
         var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMCLauncher.exe", StringComparison.OrdinalIgnoreCase));
         if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
-        SetStatus("Launcher-versie controleren...");
+
+        SetStatus($"Nieuwe launcher {tag} gevonden. Downloaden...");
         var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
         using (var dl = await _http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead))
         {
@@ -230,10 +248,22 @@ public partial class MainWindow : Window
             await using var target = File.Create(temp);
             await source.CopyToAsync(target);
         }
+
+        if (asset.Size > 0 && new FileInfo(temp).Length != asset.Size)
+        {
+            File.Delete(temp);
+            throw new InvalidOperationException("De gedownloade launcher heeft een onjuiste bestandsgrootte.");
+        }
+
         var currentHash = await Sha256Async(currentExe);
         var newHash = await Sha256Async(temp);
-        if (CryptographicOperations.FixedTimeEquals(currentHash, newHash)) { File.Delete(temp); return false; }
-        SetStatus("Nieuwe launcher gevonden. Updaten...");
+        if (CryptographicOperations.FixedTimeEquals(currentHash, newHash))
+        {
+            File.Delete(temp);
+            return false;
+        }
+
+        SetStatus($"HVMC School Launcher {tag} installeren...");
         ScheduleSelfReplacement(currentExe, temp);
         return true;
     }
@@ -249,7 +279,13 @@ public partial class MainWindow : Window
         var pid = Environment.ProcessId;
         static string Ps(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
         var script = $"$pid={pid};$src={Ps(updateExe)};$dst={Ps(currentExe)};Start-Sleep -Milliseconds 800;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};Move-Item -LiteralPath $src -Destination $dst -Force;Start-Process -FilePath $dst";
-        Process.Start(new ProcessStartInfo { FileName = "powershell.exe", Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"", UseShellExecute = false, CreateNoWindow = true });
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
         Environment.Exit(0);
     }
 
@@ -259,7 +295,15 @@ public partial class MainWindow : Window
         using var response = await _http.GetAsync("https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/HVMCUpdater.ps1");
         response.EnsureSuccessStatusCode();
         await File.WriteAllBytesAsync(updater, await response.Content.ReadAsByteArrayAsync());
-        using var p = Process.Start(new ProcessStartInfo { FileName = "powershell.exe", UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, ArgumentList = { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater } }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
+        using var p = Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater }
+        }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
         var stdout = await p.StandardOutput.ReadToEndAsync();
         var stderr = await p.StandardError.ReadToEndAsync();
         await p.WaitForExitAsync();
@@ -350,7 +394,7 @@ public partial class MainWindow : Window
     private sealed record LeaseResponse(string LeaseId,string AccountId,string AccountName,string? MicrosoftUsername,string Username,string Uuid,string MinecraftAccessToken,int ExpiresIn,string ExpiresAt,string? Xuid);
     private sealed record PcRegistrationResponse(string DeviceToken);
     private sealed record ApiError(string Error);
-    private sealed record GitHubRelease(List<GitHubAsset>? Assets);
-    private sealed record GitHubAsset(string Name, string BrowserDownloadUrl);
+    private sealed record GitHubRelease(string? TagName, List<GitHubAsset>? Assets);
+    private sealed record GitHubAsset(string Name, string BrowserDownloadUrl, long Size);
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 }
