@@ -1,0 +1,32 @@
+name: Fix Fabric Loader
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: ${{ github.event.head_commit.message != 'Fix Fabric Loader to 0.19.2' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update loader and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('launcher/MainWindow.xaml.cs')
+          s = p.read_text(encoding='utf-8')
+          old = 'private const string FabricVersion = "0.18.1";'
+          new = 'private const string FabricVersion = "0.19.2";'
+          if old not in s:
+              raise SystemExit('Expected Fabric loader version was not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm -f .github/workflows/fix-fabric-loader.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add launcher/MainWindow.xaml.cs .github/workflows/fix-fabric-loader.yml
+          git commit -m 'Fix Fabric Loader to 0.19.2'
+          git push
