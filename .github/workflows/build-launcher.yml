@@ -27,10 +27,17 @@ jobs:
         run: |
           $p = 'launcher/MainWindow.xaml.cs'
           $s = Get-Content -LiteralPath $p -Raw
-          $s = $s.Replace('private const string LauncherVersion = "2.1.0";', 'private const string LauncherVersion = "2.4.0";')
+          $changed = $false
 
+          if ($s.Contains('private const string LauncherVersion = "2.1.0";')) {
+            $s = $s.Replace('private const string LauncherVersion = "2.1.0";', 'private const string LauncherVersion = "2.4.0";')
+            $changed = $true
+          }
+
+          # Make the updater run before CmlLib inspects/installs Minecraft or Fabric.
           $pattern = '(?s)            var minecraftPath = new MinecraftPath\(Path.Combine\(Environment.GetFolderPath\(Environment.SpecialFolder.ApplicationData\), "\.minecraft"\)\);.*?            await RunUpdaterAsync\(\);'
-          $replacement = @'
+          if ([regex]::IsMatch($s, $pattern)) {
+            $replacement = @'
             var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
 
             // Synchronize HVMC content/runtime before CmlLib inspects any Fabric profile.
@@ -41,22 +48,26 @@ jobs:
             SetStatus("Minecraft voorbereiden...");
             await minecraftLauncher.InstallAsync(MinecraftVersion);
 '@
-          $new = [regex]::Replace($s, $pattern, $replacement, 1)
-          if ($new -eq $s) { throw 'Expected launcher startup block not found.' }
-          $s = $new
+            $s = [regex]::Replace($s, $pattern, $replacement, 1)
+            $changed = $true
+          }
 
-          $leasePattern = '(?m)^            _leaseId = lease\.LeaseId;\r?\n            SetStatus\(\$"\{lease\.AccountName\} geselecteerd\."\);'
-          $leaseReplacement = @'
+          # Send the first lease heartbeat immediately after acquiring the lease.
+          $leasePattern = '(?m)^            _leaseId = lease\.LeaseId;\r?\n            SetStatus\(\$"\{lease\.AccountName\} geselecteerd\."\);\r?\n(?!            await SendLeaseHeartbeatAsync)'
+          if ([regex]::IsMatch($s, $leasePattern)) {
+            $leaseReplacement = @'
             _leaseId = lease.LeaseId;
             SetStatus($"{lease.AccountName} geselecteerd.");
             await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
 '@
-          $new = [regex]::Replace($s, $leasePattern, $leaseReplacement, 1)
-          if ($new -eq $s) { throw 'Expected lease assignment block not found.' }
-          $s = $new
+            $s = [regex]::Replace($s, $leasePattern, $leaseReplacement, 1)
+            $changed = $true
+          }
 
+          # Replace the old lease heartbeat loop with a 60-second heartbeat and response validation.
           $heartbeatPattern = '(?s)    private void StartLeaseHeartbeat\(string clientId, string deviceToken, string leaseId\).*?(?=    private async Task ReleaseLeaseSafeAsync)'
-          $heartbeatReplacement = @'
+          if ([regex]::IsMatch($s, $heartbeatPattern) -and $s -notmatch 'TimeSpan\.FromMinutes\(1\)') {
+            $heartbeatReplacement = @'
     private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
     {
         _leaseHeartbeatCts?.Cancel();
@@ -90,9 +101,20 @@ jobs:
     }
 
 '@
-          $new = [regex]::Replace($s, $heartbeatPattern, $heartbeatReplacement, 1)
-          if ($new -eq $s) { throw 'Expected lease heartbeat block not found.' }
-          Set-Content -LiteralPath $p -Value $new -Encoding UTF8
+            $s = [regex]::Replace($s, $heartbeatPattern, $heartbeatReplacement, 1)
+            $changed = $true
+          }
+
+          if ($changed) {
+            Set-Content -LiteralPath $p -Value $s -Encoding UTF8
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add $p
+            if (-not (git diff --cached --quiet)) {
+              git commit -m "Fix launcher Fabric and lease handling"
+              git push origin HEAD:main
+            }
+          }
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
