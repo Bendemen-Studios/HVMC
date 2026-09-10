@@ -28,105 +28,71 @@ jobs:
           $p = 'launcher/MainWindow.xaml.cs'
           $s = Get-Content -LiteralPath $p -Raw
           $s = $s.Replace('private const string LauncherVersion = "2.1.0";', 'private const string LauncherVersion = "2.4.0";')
-          $old = @'
-              var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
-              var minecraftLauncher = new MinecraftLauncher(minecraftPath);
 
-              SetStatus("Minecraft voorbereiden...");
-              await minecraftLauncher.InstallAsync(MinecraftVersion);
+          $pattern = '(?s)            var minecraftPath = new MinecraftPath\(Path.Combine\(Environment.GetFolderPath\(Environment.SpecialFolder.ApplicationData\), "\.minecraft"\)\);.*?            await RunUpdaterAsync\(\);'
+          $replacement = @'
+            var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
 
-              SetStatus("HVMC content synchroniseren...");
-              await RunUpdaterAsync();
-          '@
-          $new = @'
-              var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
+            // Synchronize HVMC content/runtime before CmlLib inspects any Fabric profile.
+            SetStatus("HVMC content synchroniseren...");
+            await RunUpdaterAsync();
 
-              // Synchronize content, Minecraft and the pinned Fabric loader BEFORE
-              // CmlLib inspects/builds a Fabric profile. This removes obsolete loaders first.
-              SetStatus("HVMC content synchroniseren...");
-              await RunUpdaterAsync();
+            var minecraftLauncher = new MinecraftLauncher(minecraftPath);
+            SetStatus("Minecraft voorbereiden...");
+            await minecraftLauncher.InstallAsync(MinecraftVersion);
+'@
+          $new = [regex]::Replace($s, $pattern, $replacement, 1)
+          if ($new -eq $s) { throw 'Expected launcher startup block not found.' }
+          $s = $new
 
-              var minecraftLauncher = new MinecraftLauncher(minecraftPath);
-              SetStatus("Minecraft voorbereiden...");
-              await minecraftLauncher.InstallAsync(MinecraftVersion);
-          '@
-          if (-not $s.Contains($old)) { throw 'Expected launcher startup block not found.' }
-          $s = $s.Replace($old, $new)
+          $leasePattern = '(?m)^            _leaseId = lease\.LeaseId;\r?\n            SetStatus\(\$"\{lease\.AccountName\} geselecteerd\."\);'
+          $leaseReplacement = @'
+            _leaseId = lease.LeaseId;
+            SetStatus($"{lease.AccountName} geselecteerd.");
+            await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
+'@
+          $new = [regex]::Replace($s, $leasePattern, $leaseReplacement, 1)
+          if ($new -eq $s) { throw 'Expected lease assignment block not found.' }
+          $s = $new
 
-          $oldLease = @'
-              _leaseId = lease.LeaseId;
-              SetStatus($"{lease.AccountName} geselecteerd.");
-          '@
-          $newLease = @'
-              _leaseId = lease.LeaseId;
-              SetStatus($"{lease.AccountName} geselecteerd.");
-              await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
-          '@
-          if (-not $s.Contains($oldLease)) { throw 'Expected lease assignment block not found.' }
-          $s = $s.Replace($oldLease, $newLease)
+          $heartbeatPattern = '(?s)    private void StartLeaseHeartbeat\(string clientId, string deviceToken, string leaseId\).*?(?=    private async Task ReleaseLeaseSafeAsync)'
+          $heartbeatReplacement = @'
+    private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
+    {
+        _leaseHeartbeatCts?.Cancel();
+        _leaseHeartbeatCts = new CancellationTokenSource();
+        var token = _leaseHeartbeatCts.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(1), token);
+                    if (token.IsCancellationRequested) break;
+                    await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
+                }
+                catch (OperationCanceledException) { break; }
+                catch { }
+            }
+        }, token);
+    }
 
-          $oldHeartbeat = @'
-          private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
-          {
-              _leaseHeartbeatCts?.Cancel();
-              _leaseHeartbeatCts = new CancellationTokenSource();
-              var token = _leaseHeartbeatCts.Token;
-              _ = Task.Run(async () =>
-              {
-                  while (!token.IsCancellationRequested)
-                  {
-                      try
-                      {
-                          await Task.Delay(TimeSpan.FromMinutes(5), token);
-                          if (token.IsCancellationRequested) break;
-                          using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
-                          request.Headers.Add("x-hvmc-client-id", clientId);
-                          request.Headers.Add("x-hvmc-device-token", deviceToken);
-                          request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
-                          await _http.SendAsync(request, token);
-                      }
-                      catch (OperationCanceledException) { break; }
-                      catch { }
-                  }
-              }, token);
-          }
-          '@
-          $newHeartbeat = @'
-          private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
-          {
-              _leaseHeartbeatCts?.Cancel();
-              _leaseHeartbeatCts = new CancellationTokenSource();
-              var token = _leaseHeartbeatCts.Token;
-              _ = Task.Run(async () =>
-              {
-                  while (!token.IsCancellationRequested)
-                  {
-                      try
-                      {
-                          await Task.Delay(TimeSpan.FromMinutes(1), token);
-                          if (token.IsCancellationRequested) break;
-                          await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
-                      }
-                      catch (OperationCanceledException) { break; }
-                      catch { }
-                  }
-              }, token);
-          }
+    private async Task SendLeaseHeartbeatAsync(string clientId, string deviceToken, string leaseId, CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
+        request.Headers.Add("x-hvmc-client-id", clientId);
+        request.Headers.Add("x-hvmc-device-token", deviceToken);
+        request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
+        using var response = await _http.SendAsync(request, cancellationToken);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
+    }
 
-          private async Task SendLeaseHeartbeatAsync(string clientId, string deviceToken, string leaseId, CancellationToken cancellationToken = default)
-          {
-              using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
-              request.Headers.Add("x-hvmc-client-id", clientId);
-              request.Headers.Add("x-hvmc-device-token", deviceToken);
-              request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
-              using var response = await _http.SendAsync(request, cancellationToken);
-              var json = await response.Content.ReadAsStringAsync(cancellationToken);
-              if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
-          }
-          '@
-          if (-not $s.Contains($oldHeartbeat)) { throw 'Expected lease heartbeat block not found.' }
-          $s = $s.Replace($oldHeartbeat, $newHeartbeat)
-          Set-Content -LiteralPath $p -Value $s -Encoding UTF8
+'@
+          $new = [regex]::Replace($s, $heartbeatPattern, $heartbeatReplacement, 1)
+          if ($new -eq $s) { throw 'Expected lease heartbeat block not found.' }
+          Set-Content -LiteralPath $p -Value $new -Encoding UTF8
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
