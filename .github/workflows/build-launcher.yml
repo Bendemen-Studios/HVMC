@@ -22,6 +22,112 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Apply launcher runtime and lease fixes
+        shell: pwsh
+        run: |
+          $p = 'launcher/MainWindow.xaml.cs'
+          $s = Get-Content -LiteralPath $p -Raw
+          $s = $s.Replace('private const string LauncherVersion = "2.1.0";', 'private const string LauncherVersion = "2.4.0";')
+          $old = @'
+              var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
+              var minecraftLauncher = new MinecraftLauncher(minecraftPath);
+
+              SetStatus("Minecraft voorbereiden...");
+              await minecraftLauncher.InstallAsync(MinecraftVersion);
+
+              SetStatus("HVMC content synchroniseren...");
+              await RunUpdaterAsync();
+          '@
+          $new = @'
+              var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
+
+              // Synchronize content, Minecraft and the pinned Fabric loader BEFORE
+              // CmlLib inspects/builds a Fabric profile. This removes obsolete loaders first.
+              SetStatus("HVMC content synchroniseren...");
+              await RunUpdaterAsync();
+
+              var minecraftLauncher = new MinecraftLauncher(minecraftPath);
+              SetStatus("Minecraft voorbereiden...");
+              await minecraftLauncher.InstallAsync(MinecraftVersion);
+          '@
+          if (-not $s.Contains($old)) { throw 'Expected launcher startup block not found.' }
+          $s = $s.Replace($old, $new)
+
+          $oldLease = @'
+              _leaseId = lease.LeaseId;
+              SetStatus($"{lease.AccountName} geselecteerd.");
+          '@
+          $newLease = @'
+              _leaseId = lease.LeaseId;
+              SetStatus($"{lease.AccountName} geselecteerd.");
+              await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
+          '@
+          if (-not $s.Contains($oldLease)) { throw 'Expected lease assignment block not found.' }
+          $s = $s.Replace($oldLease, $newLease)
+
+          $oldHeartbeat = @'
+          private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
+          {
+              _leaseHeartbeatCts?.Cancel();
+              _leaseHeartbeatCts = new CancellationTokenSource();
+              var token = _leaseHeartbeatCts.Token;
+              _ = Task.Run(async () =>
+              {
+                  while (!token.IsCancellationRequested)
+                  {
+                      try
+                      {
+                          await Task.Delay(TimeSpan.FromMinutes(5), token);
+                          if (token.IsCancellationRequested) break;
+                          using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
+                          request.Headers.Add("x-hvmc-client-id", clientId);
+                          request.Headers.Add("x-hvmc-device-token", deviceToken);
+                          request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
+                          await _http.SendAsync(request, token);
+                      }
+                      catch (OperationCanceledException) { break; }
+                      catch { }
+                  }
+              }, token);
+          }
+          '@
+          $newHeartbeat = @'
+          private void StartLeaseHeartbeat(string clientId, string deviceToken, string leaseId)
+          {
+              _leaseHeartbeatCts?.Cancel();
+              _leaseHeartbeatCts = new CancellationTokenSource();
+              var token = _leaseHeartbeatCts.Token;
+              _ = Task.Run(async () =>
+              {
+                  while (!token.IsCancellationRequested)
+                  {
+                      try
+                      {
+                          await Task.Delay(TimeSpan.FromMinutes(1), token);
+                          if (token.IsCancellationRequested) break;
+                          await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
+                      }
+                      catch (OperationCanceledException) { break; }
+                      catch { }
+                  }
+              }, token);
+          }
+
+          private async Task SendLeaseHeartbeatAsync(string clientId, string deviceToken, string leaseId, CancellationToken cancellationToken = default)
+          {
+              using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
+              request.Headers.Add("x-hvmc-client-id", clientId);
+              request.Headers.Add("x-hvmc-device-token", deviceToken);
+              request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
+              using var response = await _http.SendAsync(request, cancellationToken);
+              var json = await response.Content.ReadAsStringAsync(cancellationToken);
+              if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
+          }
+          '@
+          if (-not $s.Contains($oldHeartbeat)) { throw 'Expected lease heartbeat block not found.' }
+          $s = $s.Replace($oldHeartbeat, $newHeartbeat)
+          Set-Content -LiteralPath $p -Value $s -Encoding UTF8
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
