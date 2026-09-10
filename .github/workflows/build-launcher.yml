@@ -9,6 +9,7 @@ on:
       - 'launcher/**'
       - 'HVMCUpdater.ps1'
       - 'version.txt'
+      - 'content/**'
       - '.github/workflows/build-launcher.yml'
   workflow_dispatch:
 
@@ -49,6 +50,20 @@ jobs:
             await minecraftLauncher.InstallAsync(MinecraftVersion);
 '@
             $s = [regex]::Replace($s, $pattern, $replacement, 1)
+            $changed = $true
+          }
+
+          # Fabric itself is delivered as HVMC content. Never ask CmlLib to install/select
+          # an arbitrary Fabric loader version from the network.
+          $fabricInstallPattern = '(?m)^            SetStatus\(\$"Fabric \{FabricVersion\} installeren en controleren\.\.\."\);\r?\n            await minecraftLauncher\.InstallAsync\(fabricProfile\);'
+          if ([regex]::IsMatch($s, $fabricInstallPattern)) {
+            $fabricInstallReplacement = @'
+            SetStatus($"Gebundelde Fabric {FabricVersion} controleren...");
+            var bundledFabricJson = Path.Combine(minecraftPath.BasePath, "versions", fabricProfile, $"{fabricProfile}.json");
+            if (!File.Exists(bundledFabricJson))
+                throw new InvalidOperationException($"Gebundelde Fabric-installatie ontbreekt: {bundledFabricJson}");
+'@
+            $s = [regex]::Replace($s, $fabricInstallPattern, $fabricInstallReplacement, 1)
             $changed = $true
           }
 
@@ -111,7 +126,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add $p
             if (-not (git diff --cached --quiet)) {
-              git commit -m "Fix launcher Fabric and lease handling"
+              git commit -m "Apply bundled Fabric launcher changes"
               git push origin HEAD:main
             }
           }
