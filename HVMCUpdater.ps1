@@ -30,16 +30,32 @@ try {
     Log "Beschikbare HVMC versie: $remoteVersion"
     Log "HVMC runtime wordt als content geleverd: Minecraft $McVersion / Fabric $FabricLoader"
 
-    $remoteFiles=@(Get-RemoteFiles)
-    if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
-
     $state=ReadJson $StatePath
     $installedVersion=if($state){[string]$state.installedVersion}else{''}
     $oldManifest=ReadJson $ManifestPath
     $oldEntries=@{}
     if($oldManifest -and $oldManifest.files){foreach($entry in @($oldManifest.files)){$oldEntries[[string]$entry.path]=[string]$entry.sha}}
-    $newManifest=@{}
 
+    # Fast path: wanneer dezelfde contentversie al volledig lokaal staat, hoeft de GitHub tree
+    # en geen enkel bestand gecontroleerd of gedownload te worden. Alleen een paar kritieke
+    # bestanden worden gecontroleerd zodat een handmatig verwijderde runtime automatisch herstelt.
+    $fabricJson=Join-Path $MinecraftDir "versions\$FabricProfile\$FabricProfile.json"
+    $criticalFiles = @(
+        $fabricJson,
+        (Join-Path $MinecraftDir 'mods')
+    )
+    $criticalPresent = $true
+    foreach($critical in $criticalFiles){ if(-not(Test-Path -LiteralPath $critical)){ $criticalPresent=$false; break } }
+    if($installedVersion -eq $remoteVersion -and $oldManifest -and $criticalPresent){
+        Log "HVMC versie $remoteVersion is al lokaal gesynchroniseerd. Content-sync overgeslagen."
+        Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
+        exit 0
+    }
+
+    $remoteFiles=@(Get-RemoteFiles)
+    if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
+
+    $newManifest=@{}
     foreach($file in $remoteFiles){
         $relative=Safe ([string]$file.path).Substring(8)
         $destination=Join-Path $MinecraftDir $relative
@@ -53,7 +69,6 @@ try {
     SaveJson ([pscustomobject]@{version=$remoteVersion;files=@($manifestFiles);updated=(Get-Date).ToUniversalTime().ToString('o')}) $ManifestPath
     SaveJson ([pscustomobject]@{installedVersion=$remoteVersion;updated=(Get-Date).ToUniversalTime().ToString('o')}) $StatePath
 
-    $fabricJson=Join-Path $MinecraftDir "versions\$FabricProfile\$FabricProfile.json"
     if(-not(Test-Path -LiteralPath $fabricJson)){
         throw "Gebundelde Fabric-installatie ontbreekt: content/versions/$FabricProfile/$FabricProfile.json"
     }
