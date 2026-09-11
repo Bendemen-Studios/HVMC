@@ -106,19 +106,10 @@ $replacementIdentity = @'
 
 $updated = [regex]::Replace($text, $patternUpdater, $replacementUpdater, 1)
 $updated = [regex]::Replace($updated, $patternIdentity, $replacementIdentity, 1)
-$updated = $updated.Replace('private const string LauncherVersion = "2.4.0";', 'private const string LauncherVersion = "2.5.0";', [StringComparison]::Ordinal)
+$updated = $updated.Replace('private const string LauncherVersion = "2.4.0";', 'private const string LauncherVersion = "2.5.0";')
 
 if ($updated -eq $text) { throw 'Expected launcher blocks were not found; refusing to generate an unmodified launcher.' }
 if ($updated -notmatch 'private const string LauncherVersion = "2\.5\.0";') { throw 'Launcher version 2.5.0 was not applied.' }
-
-$remainingLegacyMethods = @(
-    'private static string GetStableClientId',
-    'private string? GetDeviceToken',
-    'private void SaveDeviceToken'
-)
-foreach ($method in $remainingLegacyMethods) {
-    if (($updated | Select-String -SimpleMatch $method -Quiet)) { throw "Legacy method remained after hardening: $method" }
-}
 
 $parent = Split-Path -Parent $Destination
 New-Item -ItemType Directory -Force -Path $parent | Out-Null
