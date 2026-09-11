@@ -36,7 +36,8 @@ jobs:
             }
           }
           if (-not (Test-Path -LiteralPath 'launcher/GenerateHardenedMainWindow.ps1')) { throw 'Launcher hardening generator ontbreekt.' }
-          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'launcher/GenerateHardenedMainWindow.ps1' -Source 'launcher/MainWindow.xaml.cs' -Destination 'launcher/MainWindow.xaml.cs'
+          & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'launcher/GenerateHardenedMainWindow.ps1' -Source 'launcher/MainWindow.xaml.cs' -Destination 'launcher/MainWindow.xaml.cs'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Restore
         run: dotnet restore launcher/HVMCLauncher.csproj
