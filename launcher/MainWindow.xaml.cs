@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private const string LauncherVersion = "2.4.0";
     private const int MaximumRamMb = 4096;
     private const int PcHeartbeatSeconds = 30;
+    private const int LeaseHeartbeatSeconds = 30;
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
@@ -332,8 +333,9 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(30), token);
-                    if (!token.IsCancellationRequested) await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
+                    await Task.Delay(TimeSpan.FromSeconds(LeaseHeartbeatSeconds), token);
+                    if (token.IsCancellationRequested) break;
+                    await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { }
