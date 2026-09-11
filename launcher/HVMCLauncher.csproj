@@ -14,17 +14,11 @@
     <Exec Command="powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$p='$(MSBuildProjectDirectory)\hvmc.ico'; if(-not (Test-Path -LiteralPath $p)){ [IO.File]::WriteAllBytes($p,[Convert]::FromBase64String([IO.File]::ReadAllText('$(MSBuildProjectDirectory)\hvmc.ico.b64'))) }&quot;" />
   </Target>
 
-  <Target Name="GenerateHardenedMainWindow" BeforeTargets="CoreCompile">
-    <Exec Command="powershell -NoProfile -NonInteractive -File &quot;$(MSBuildProjectDirectory)\GenerateHardenedMainWindow.ps1&quot; -Source &quot;$(MSBuildProjectDirectory)\MainWindow.xaml.cs&quot; -Destination &quot;$(IntermediateOutputPath)MainWindow.Hardened.g.cs&quot;" />
-  </Target>
-
   <ItemGroup>
     <PackageReference Include="CmlLib.Core" Version="4.0.6" />
     <PackageReference Include="CmlLib.Core.Auth.Microsoft" Version="3.3.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
     <None Include="hvmc.ico.b64" CopyToOutputDirectory="Never" />
-    <Compile Remove="MainWindow.xaml.cs" />
-    <Compile Include="$(IntermediateOutputPath)MainWindow.Hardened.g.cs" />
     <EmbeddedResource Include="..\HVMCUpdater.ps1" Link="HVMCUpdater.ps1" />
   </ItemGroup>
 </Project>
