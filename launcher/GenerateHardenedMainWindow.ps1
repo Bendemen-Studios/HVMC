@@ -106,8 +106,10 @@ $replacementIdentity = @'
 
 $updated = [regex]::Replace($text, $patternUpdater, $replacementUpdater, 1)
 $updated = [regex]::Replace($updated, $patternIdentity, $replacementIdentity, 1)
+$updated = $updated.Replace('private const string LauncherVersion = "2.4.0";', 'private const string LauncherVersion = "2.5.0";', [StringComparison]::Ordinal)
 
 if ($updated -eq $text) { throw 'Expected launcher blocks were not found; refusing to generate an unmodified launcher.' }
+if ($updated -notmatch 'private const string LauncherVersion = "2\.5\.0";') { throw 'Launcher version 2.5.0 was not applied.' }
 
 $remainingLegacyMethods = @(
     'private static string GetStableClientId',
