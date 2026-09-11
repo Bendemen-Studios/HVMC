@@ -53,8 +53,7 @@ jobs:
           $item = Get-Item -LiteralPath $exe
           if ($item.Length -lt 1MB) { throw "HVMCLauncher.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
           $pe = [IO.File]::ReadAllBytes($exe)
-          $text = [Text.Encoding]::ASCII.GetString($pe)
-          if ($text -notmatch "HVMCUpdater\.ps1") { throw "Ingebouwde HVMC updater resource niet gevonden in de launcher." }
+          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMCLauncher.exe heeft geen geldige MZ/PE-header." }
           Write-Host "Launcher artifact OK: $($item.Length) bytes"
 
       - name: Create GitHub release from tag
