@@ -30,7 +30,6 @@ public partial class MainWindow : Window
     private string? _leaseId;
     private CancellationTokenSource? _leaseHeartbeatCts;
     private CancellationTokenSource? _pcHeartbeatCts;
-    private DateTimeOffset _lastPcHeartbeatFailure = DateTimeOffset.MinValue;
 
     public MainWindow()
     {
@@ -172,11 +171,9 @@ public partial class MainWindow : Window
                     await SendPcHeartbeatAsync(token);
                 }
                 catch (OperationCanceledException) { break; }
-                catch (Exception ex)
+                catch
                 {
-                    _lastPcHeartbeatFailure = DateTimeOffset.UtcNow;
-                    Dispatcher.Invoke(() => SetStatus("Verbinding met HVMC-server controleren..."));
-                    _ = ex;
+                    try { Dispatcher.Invoke(() => SetStatus("Verbinding met HVMC-server tijdelijk verloren; opnieuw proberen...")); } catch { }
                 }
             }
         }, token);
@@ -388,11 +385,8 @@ public partial class MainWindow : Window
     }
 
     private void SetStatus(string text) => Dispatcher.Invoke(() => StatusText.Text = text);
-
     private void ShowError(string title, Exception ex) => WpfMessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
-
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
-
     private sealed record PcRegistrationResponse(string DeviceToken);
     private sealed record LeaseResponse(string LeaseId, string Username, string MinecraftAccessToken, string Uuid, string? Xuid, string AccountName);
     private sealed record GitHubRelease(string? TagName, List<GitHubAsset>? Assets);
