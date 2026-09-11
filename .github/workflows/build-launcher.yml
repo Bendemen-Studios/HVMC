@@ -30,7 +30,7 @@ jobs:
       - name: Prepare launcher source
         shell: pwsh
         run: |
-          if (Test-Path -LiteralPath 'launcher/hvmc.ico.b64' -and -not (Test-Path -LiteralPath 'launcher/hvmc.ico')) {
+          if ((Test-Path -LiteralPath 'launcher/hvmc.ico.b64') -and -not (Test-Path -LiteralPath 'launcher/hvmc.ico')) {
             [IO.File]::WriteAllBytes('launcher/hvmc.ico', [Convert]::FromBase64String([IO.File]::ReadAllText('launcher/hvmc.ico.b64')))
           }
           if (-not (Test-Path -LiteralPath 'launcher/GenerateHardenedMainWindow.ps1')) { throw 'Launcher hardening generator ontbreekt.' }
