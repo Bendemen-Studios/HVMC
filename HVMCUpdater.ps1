@@ -36,20 +36,26 @@ try {
     $oldEntries=@{}
     if($oldManifest -and $oldManifest.files){foreach($entry in @($oldManifest.files)){$oldEntries[[string]$entry.path]=[string]$entry.sha}}
 
-    # Fast path: wanneer dezelfde contentversie al volledig lokaal staat, hoeft de GitHub tree
-    # en geen enkel bestand gecontroleerd of gedownload te worden. Alleen een paar kritieke
-    # bestanden worden gecontroleerd zodat een handmatig verwijderde runtime automatisch herstelt.
+    # Fast path: behoud de snelle startup, maar controleer nu alle bestanden uit het
+    # lokale manifest op aanwezigheid. Zo wordt een handmatig verwijderd bestand niet
+    # stilzwijgend overgeslagen. Bij een ontbrekend bestand valt de updater terug op
+    # de normale GitHub SHA-verificatie en synchronisatie.
     $fabricJson=Join-Path $MinecraftDir "versions\$FabricProfile\$FabricProfile.json"
-    $criticalFiles = @(
-        $fabricJson,
-        (Join-Path $MinecraftDir 'mods')
-    )
-    $criticalPresent = $true
-    foreach($critical in $criticalFiles){ if(-not(Test-Path -LiteralPath $critical)){ $criticalPresent=$false; break } }
+    $criticalPresent = Test-Path -LiteralPath $fabricJson
     if($installedVersion -eq $remoteVersion -and $oldManifest -and $criticalPresent){
-        Log "HVMC versie $remoteVersion is al lokaal gesynchroniseerd. Content-sync overgeslagen."
-        Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
-        exit 0
+        $manifestComplete = $true
+        foreach($entry in @($oldManifest.files)){
+            try {
+                $relative = Safe ([string]$entry.path)
+                if(-not (Test-Path -LiteralPath (Join-Path $MinecraftDir $relative) -PathType Leaf)) { $manifestComplete = $false; break }
+            } catch { $manifestComplete = $false; break }
+        }
+        if($manifestComplete){
+            Log "HVMC versie $remoteVersion is al lokaal gesynchroniseerd. Content-sync overgeslagen."
+            Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
+            exit 0
+        }
+        Log 'Lokale content is incompleet; volledige SHA-controle en synchronisatie wordt uitgevoerd.'
     }
 
     $remoteFiles=@(Get-RemoteFiles)
