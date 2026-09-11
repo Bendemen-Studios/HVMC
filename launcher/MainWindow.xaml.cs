@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private string? _leaseId;
     private CancellationTokenSource? _leaseHeartbeatCts;
     private CancellationTokenSource? _pcHeartbeatCts;
+    private DateTimeOffset _lastPcHeartbeatFailure = DateTimeOffset.MinValue;
 
     public MainWindow()
     {
@@ -106,36 +107,26 @@ public partial class MainWindow : Window
         try
         {
             if (!await EnsurePcAuthorizedAsync()) { ExitButton.IsEnabled = true; return; }
-
             var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
-
-            // Eerst HVMC-content synchroniseren. Hierdoor staat het gebundelde Fabric-profiel klaar voordat CmlLib het gebruikt.
             SetStatus("HVMC content synchroniseren...");
             await RunUpdaterAsync();
-
             var minecraftLauncher = new MinecraftLauncher(minecraftPath);
             SetStatus("Minecraft voorbereiden...");
             await minecraftLauncher.InstallAsync(MinecraftVersion);
-
             _clientId ??= GetStableClientId();
             _deviceToken ??= GetDeviceToken();
             if (string.IsNullOrWhiteSpace(_deviceToken)) throw new InvalidOperationException("Deze pc is niet geautoriseerd.");
-
             SetStatus("Vrij Minecraft-account zoeken...");
             var lease = await AcquireLeaseAsync(_clientId, _deviceToken);
             _leaseId = lease.LeaseId;
             SetStatus($"{lease.AccountName} geselecteerd.");
-
             var session = new MSession { Username = lease.Username, AccessToken = lease.MinecraftAccessToken, UUID = lease.Uuid, Xuid = lease.Xuid ?? string.Empty };
             var display = Forms.Screen.PrimaryScreen?.Bounds;
             var width = display?.Width ?? 1920;
             var height = display?.Height ?? 1080;
             var fabricProfile = $"fabric-loader-{FabricVersion}-{MinecraftVersion}";
-
-            // Belangrijk: niet opnieuw Fabric installeren. De updater levert dit profiel als HVMC-content.
             var fabricProfilePath = Path.Combine(minecraftPath.BasePath, "versions", fabricProfile, $"{fabricProfile}.json");
             if (!File.Exists(fabricProfilePath)) throw new InvalidOperationException($"Gebundelde Fabric ontbreekt: {fabricProfilePath}");
-
             SetStatus($"Fabric {FabricVersion} controleren...");
             var process = await minecraftLauncher.InstallAndBuildProcessAsync(fabricProfile, new MLaunchOption
             {
@@ -181,7 +172,12 @@ public partial class MainWindow : Window
                     await SendPcHeartbeatAsync(token);
                 }
                 catch (OperationCanceledException) { break; }
-                catch { }
+                catch (Exception ex)
+                {
+                    _lastPcHeartbeatFailure = DateTimeOffset.UtcNow;
+                    Dispatcher.Invoke(() => SetStatus("Verbinding met HVMC-server controleren..."));
+                    _ = ex;
+                }
             }
         }, token);
     }
@@ -255,14 +251,19 @@ public partial class MainWindow : Window
     private async Task RunUpdaterAsync()
     {
         var updater = Path.Combine(_root, "HVMCUpdater.ps1");
-        using var response = await _http.GetAsync("https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/HVMCUpdater.ps1");
-        response.EnsureSuccessStatusCode();
-        await File.WriteAllBytesAsync(updater, await response.Content.ReadAsByteArrayAsync());
+        var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+        var resourceName = assembly.GetManifestResourceNames().FirstOrDefault(x => x.EndsWith("HVMCUpdater.ps1", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(resourceName)) throw new InvalidOperationException("De ingebouwde HVMC updater ontbreekt in deze launcher-build.");
+        await using (var resource = assembly.GetManifestResourceStream(resourceName) ?? throw new InvalidOperationException("De ingebouwde HVMC updater kon niet worden geopend."))
+        await using (var target = File.Create(updater))
+        {
+            await resource.CopyToAsync(target);
+        }
         using var p = Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe", UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
-            ArgumentList = { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updater }
+            ArgumentList = { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", updater }
         }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
         var stdout = await p.StandardOutput.ReadToEndAsync();
         var stderr = await p.StandardError.ReadToEndAsync();
@@ -312,14 +313,14 @@ public partial class MainWindow : Window
         throw new InvalidOperationException(lastError ?? "Onbekende fout bij het ophalen van een Minecraft-account.");
     }
 
-    private async Task SendLeaseHeartbeatAsync(string clientId, string deviceToken, string leaseId)
+    private async Task SendLeaseHeartbeatAsync(string clientId, string deviceToken, string leaseId, CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
         request.Headers.Add("x-hvmc-client-id", clientId);
         request.Headers.Add("x-hvmc-device-token", deviceToken);
         request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
-        using var response = await _http.SendAsync(request);
-        var json = await response.Content.ReadAsStringAsync();
+        using var response = await _http.SendAsync(request, cancellationToken);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
     }
 
@@ -334,14 +335,8 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromMinutes(1), token);
-                    if (token.IsCancellationRequested) break;
-                    using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/heartbeat");
-                    request.Headers.Add("x-hvmc-client-id", clientId);
-                    request.Headers.Add("x-hvmc-device-token", deviceToken);
-                    request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
-                    using var response = await _http.SendAsync(request, token);
-                    _ = await response.Content.ReadAsStringAsync(token);
+                    await Task.Delay(TimeSpan.FromSeconds(30), token);
+                    if (!token.IsCancellationRequested) await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { }
@@ -351,61 +346,55 @@ public partial class MainWindow : Window
 
     private async Task ReleaseLeaseSafeAsync()
     {
-        if (string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_deviceToken) || string.IsNullOrWhiteSpace(_leaseId)) return;
+        if (string.IsNullOrWhiteSpace(_leaseId) || string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_deviceToken)) return;
+        var leaseId = _leaseId;
+        _leaseId = null;
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/release");
             request.Headers.Add("x-hvmc-client-id", _clientId);
             request.Headers.Add("x-hvmc-device-token", _deviceToken);
-            request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, leaseId = _leaseId }), Encoding.UTF8, "application/json");
-            await _http.SendAsync(request);
+            request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, leaseId }), Encoding.UTF8, "application/json");
+            using var response = await _http.SendAsync(request);
+            if (!response.IsSuccessStatusCode) _ = await response.Content.ReadAsStringAsync();
         }
         catch { }
-        finally { _leaseId = null; }
     }
 
-    private string GetStableClientId()
+    private static string GetStableClientId()
     {
-        var path = Path.Combine(_root, "client-id.txt");
-        if (File.Exists(path))
-        {
-            var existing = File.ReadAllText(path).Trim();
-            if (Guid.TryParse(existing, out _)) return existing;
-        }
-        var created = Guid.NewGuid().ToString();
-        File.WriteAllText(path, created);
-        return created;
+        var value = Environment.MachineName.Trim();
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     }
 
     private string? GetDeviceToken()
     {
-        var path = Path.Combine(_root, "device-token.txt");
-        if (!File.Exists(path)) return null;
-        var token = File.ReadAllText(path).Trim();
-        return string.IsNullOrWhiteSpace(token) ? null : token;
+        var path = Path.Combine(_root, "device.token");
+        return File.Exists(path) ? File.ReadAllText(path).Trim() : null;
     }
 
-    private void SaveDeviceToken(string token) => File.WriteAllText(Path.Combine(_root, "device-token.txt"), token);
-    private void SetStatus(string message) => StatusText.Text = message;
+    private void SaveDeviceToken(string token) => File.WriteAllText(Path.Combine(_root, "device.token"), token.Trim());
 
     private static string GetError(string json)
     {
-        if (string.IsNullOrWhiteSpace(json)) return "De server gaf geen foutmelding terug.";
         try
         {
-            var error = JsonSerializer.Deserialize<ApiError>(json, JsonOptions)?.Error;
-            if (!string.IsNullOrWhiteSpace(error)) return error;
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("error", out var error)) return error.GetString() ?? "Onbekende serverfout.";
+            if (doc.RootElement.TryGetProperty("message", out var message)) return message.GetString() ?? "Onbekende serverfout.";
         }
-        catch (JsonException) { }
-        return json.Trim();
+        catch { }
+        return string.IsNullOrWhiteSpace(json) ? "Onbekende serverfout." : json;
     }
 
-    private void ShowError(string title, Exception ex) => WpfMessageBox.Show(this, ex.Message, "HVMC School Launcher", MessageBoxButton.OK, MessageBoxImage.Error);
+    private void SetStatus(string text) => Dispatcher.Invoke(() => StatusText.Text = text);
 
-    private sealed record LeaseResponse(string LeaseId,string AccountId,string AccountName,string? MicrosoftUsername,string Username,string Uuid,string MinecraftAccessToken,int ExpiresIn,string ExpiresAt,string? Xuid);
-    private sealed record PcRegistrationResponse(string DeviceToken);
-    private sealed record ApiError(string Error);
-    private sealed record GitHubRelease(string? TagName, List<GitHubAsset>? Assets);
-    private sealed record GitHubAsset(string Name, string BrowserDownloadUrl, long Size);
+    private void ShowError(string title, Exception ex) => WpfMessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    private sealed record PcRegistrationResponse(string DeviceToken);
+    private sealed record LeaseResponse(string LeaseId, string Username, string MinecraftAccessToken, string Uuid, string? Xuid, string AccountName);
+    private sealed record GitHubRelease(string? TagName, List<GitHubAsset>? Assets);
+    private sealed record GitHubAsset(string? Name, long Size, string? BrowserDownloadUrl);
 }
