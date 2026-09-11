@@ -68,12 +68,12 @@ There is intentionally **no Provisioner.exe**. Microsoft account management belo
 HVMC targets:
 
 - Minecraft Java Edition **1.21.11**
-- Fabric Loader **0.18.1**
+- Fabric Loader **0.19.2**
 - Windows x64
 
 The launcher prepares Minecraft and Fabric automatically and starts Minecraft fullscreen using the detected primary display resolution.
 
-Fabric is installed **headlessly** using the official Universal/JAR installer and its command-line client mode. The Fabric GUI installer is not opened. The launcher first ensures the Minecraft installation/runtime exists, then the updater downloads the Universal installer and runs it silently.
+The Fabric runtime is managed as versioned HVMC content under `content/` and synchronised by `HVMCUpdater.ps1`. The Fabric GUI installer is not opened.
 
 ## Content synchronisation
 
@@ -96,7 +96,8 @@ content/
 - new files are downloaded;
 - files removed from the managed repository are removed locally;
 - required Minecraft directories are created automatically;
-- the required Fabric profile is installed when missing.
+- the required Fabric profile is installed when missing;
+- when the local content manifest is incomplete, the updater automatically falls back to full remote SHA verification.
 
 The updater also keeps a local manifest and state file under `%LOCALAPPDATA%\Bendemen\HVMC`.
 
@@ -107,6 +108,8 @@ The updater runs without opening a visible command prompt.
 HVMC School Launcher checks the latest stable GitHub release at startup. It reads the semantic release tag (`v1.0`, `v1.1`, `v1.3`, etc.) and compares it with the launcher version.
 
 When a newer release contains `HVMCLauncher.exe`, the installed launcher downloads it to a temporary file, verifies the download, replaces the current executable after exiting, and starts the new version. This keeps Start Menu and desktop shortcuts pointed at the updated application.
+
+The launcher release also bundles the updater script used by that launcher build, so the launcher does not need to download executable PowerShell source before running the content synchronisation.
 
 ## Offline behaviour
 
