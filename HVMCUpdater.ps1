@@ -7,8 +7,8 @@ $Root = Join-Path $env:LOCALAPPDATA 'Bendemen\HVMC'
 $ManifestPath = Join-Path $Root 'content-manifest.json'
 $StatePath = Join-Path $Root 'state.json'
 $LogPath = Join-Path $Root 'bootstrapper.log'
-$McVersion = '1.21.11'
-$FabricLoader = '0.19.2'
+$McVersion = '26.2'
+$FabricLoader = '0.19.3'
 $FabricProfile = "fabric-loader-$FabricLoader-$McVersion"
 
 foreach ($dir in @($Root, $MinecraftDir, $MinecraftDir+'\mods', $MinecraftDir+'\config', $MinecraftDir+'\resourcepacks', $MinecraftDir+'\shaderpacks', $MinecraftDir+'\datapacks', $MinecraftDir+'\kubejs', (Join-Path $MinecraftDir 'versions'))) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -36,28 +36,9 @@ try {
     $oldEntries=@{}
     if($oldManifest -and $oldManifest.files){foreach($entry in @($oldManifest.files)){$oldEntries[[string]$entry.path]=[string]$entry.sha}}
 
-    # Fast path: behoud de snelle startup, maar controleer nu alle bestanden uit het
-    # lokale manifest op aanwezigheid. Zo wordt een handmatig verwijderd bestand niet
-    # stilzwijgend overgeslagen. Bij een ontbrekend bestand valt de updater terug op
-    # de normale GitHub SHA-verificatie en synchronisatie.
-    $fabricJson=Join-Path $MinecraftDir "versions\$FabricProfile\$FabricProfile.json"
-    $criticalPresent = Test-Path -LiteralPath $fabricJson
-    if($installedVersion -eq $remoteVersion -and $oldManifest -and $criticalPresent){
-        $manifestComplete = $true
-        foreach($entry in @($oldManifest.files)){
-            try {
-                $relative = Safe ([string]$entry.path)
-                if(-not (Test-Path -LiteralPath (Join-Path $MinecraftDir $relative) -PathType Leaf)) { $manifestComplete = $false; break }
-            } catch { $manifestComplete = $false; break }
-        }
-        if($manifestComplete){
-            Log "HVMC versie $remoteVersion is al lokaal gesynchroniseerd. Content-sync overgeslagen."
-            Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
-            exit 0
-        }
-        Log 'Lokale content is incompleet; volledige SHA-controle en synchronisatie wordt uitgevoerd.'
-    }
-
+    # Always refresh the small GitHub content index and compare local Git blob hashes.
+    # This keeps later startups fast because unchanged files are never downloaded,
+    # while new/updated content is still detected immediately.
     $remoteFiles=@(Get-RemoteFiles)
     if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
 
