@@ -72,7 +72,7 @@ jobs:
             @{slug='melody'; name='Melody'},
             @{slug='moreculling'; name='More Culling'},
             @{slug='not-enough-animations'; name='Not Enough Animations'},
-            @{slug='packetfixer'; name='Packet Fixer'},
+            @{slug='packet-fixer'; name='Packet Fixer'},
             @{slug='reeses-sodium-options'; name="Reese's Sodium Options"},
             @{slug='sodium-extra'; name='Sodium Extra'},
             @{slug='sodium'; name='Sodium'}
@@ -92,7 +92,7 @@ jobs:
             $url = "https://api.modrinth.com/v3/project/$($mod.slug)/version?loaders=$encodedLoader&game_versions=$encodedGame"
             $versions = @(Invoke-RestMethod -Uri $url -TimeoutSec 60)
             $version = @($versions |
-              Where-Object { $_.version_type -eq 'release' } |
+              Where-Object { $_.version_type -eq 'release' -and $_.version_number -notmatch '(?i)(alpha|beta|rc|snapshot)' } |
               Select-Object -First 1) | Select-Object -First 1
             if (-not $version) {
               throw "Geen stabiele Fabric 26.2 release gevonden voor $($mod.name)."
