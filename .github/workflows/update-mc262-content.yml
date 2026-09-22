@@ -53,7 +53,7 @@ jobs:
             $parent = Split-Path -Parent $destination
             New-Item -ItemType Directory -Force -Path $parent | Out-Null
             $url = "https://maven.fabricmc.net/$relative"
-            Write-Host "Downloading library $lib.name"
+            Write-Host "Downloading library $($lib.name)"
             Invoke-WebRequest -Uri $url -OutFile $destination -TimeoutSec 180
           }
 
@@ -91,10 +91,9 @@ jobs:
             $encodedGame = '%5B%2226.2%22%5D'
             $url = "https://api.modrinth.com/v3/project/$($mod.slug)/version?loaders=$encodedLoader&game_versions=$encodedGame"
             $versions = @(Invoke-RestMethod -Uri $url -TimeoutSec 60)
-            $version = $versions |
+            $version = @($versions |
               Where-Object { $_.version_type -eq 'release' } |
-              Sort-Object { [DateTime]$_.date_published } -Descending |
-              Select-Object -First 1
+              Select-Object -First 1) | Select-Object -First 1
             if (-not $version) {
               throw "Geen stabiele Fabric 26.2 release gevonden voor $($mod.name)."
             }
