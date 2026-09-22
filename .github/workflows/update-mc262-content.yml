@@ -71,7 +71,7 @@ jobs:
             @{slug='language-reload'; name='Language Reload'},
             @{slug='melody'; name='Melody'},
             @{slug='moreculling'; name='More Culling'},
-            @{slug='notenoughanimations'; name='Not Enough Animations'},
+            @{slug='not-enough-animations'; name='Not Enough Animations'},
             @{slug='packetfixer'; name='Packet Fixer'},
             @{slug='reeses-sodium-options'; name="Reese's Sodium Options"},
             @{slug='sodium-extra'; name='Sodium Extra'},
