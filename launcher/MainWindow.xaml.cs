@@ -17,8 +17,8 @@ public partial class MainWindow : Window
 {
     private const string PoolApi = "https://accounts.hvmc.nl";
     private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
-    private const string MinecraftVersion = "1.21.11";
-    private const string FabricVersion = "0.19.2";
+    private const string MinecraftVersion = "26.2";
+    private const string FabricVersion = "0.19.3";
     private const string LauncherVersion = "2.4.0";
     private const int MaximumRamMb = 4096;
     private const int PcHeartbeatSeconds = 30;
