@@ -3,7 +3,6 @@ using Microsoft.Win32;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Windows;
 using WpfMessageBox = System.Windows.MessageBox;
@@ -15,7 +14,7 @@ public partial class App : System.Windows.Application
     private const string AppName = "HVMC School Launcher";
     private const string Publisher = "Bendemen Studios";
 
-    public const string AppVersion = "3.1.0";
+    public static string AppVersion => typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
     private const string LatestReleaseApi =
         "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
@@ -253,7 +252,7 @@ public partial class App : System.Windows.Application
         try
         {
             using var uninstall = Registry.CurrentUser.CreateSubKey(
-                @"SoftwareMicrosoftWindowsCurrentVersionUninstallHVMC", true);
+                @"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\HVMC", true);
 
             if (uninstall is null) return;
 
