@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private string? _leaseId;
     private CancellationTokenSource? _leaseHeartbeatCts;
     private CancellationTokenSource? _pcHeartbeatCts;
+    private bool _contentUpdateFailed;
 
     public MainWindow()
     {
@@ -112,6 +113,7 @@ public partial class MainWindow : Window
         {
             if (!await EnsurePcAuthorizedAsync()) { ExitButton.IsEnabled = true; return; }
             var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
+            _contentUpdateFailed = false;
             SetStatus("HVMC content synchroniseren...");
             await RunUpdaterAsync();
             var minecraftLauncher = new MinecraftLauncher(minecraftPath);
@@ -250,7 +252,7 @@ public partial class MainWindow : Window
         Environment.Exit(0);
     }
 
-    private async Task RunUpdaterAsync()
+    private async Task RunUpdaterAsync(bool forceRedownload = false)
     {
         var updater = Path.Combine(_root, "HVMCUpdater.ps1");
         var assembly = System.Reflection.Assembly.GetExecutingAssembly();
@@ -265,7 +267,16 @@ public partial class MainWindow : Window
         {
             FileName = "powershell.exe", UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true,
-            ArgumentList = { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", updater }
+            ArgumentList =
+            {
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-File", updater
+            }
+        };
+        if (forceRedownload)
+            p.StartInfo.ArgumentList.Add("-ForceRedownload")
         }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
         var stdoutTask = p.StandardOutput.ReadToEndAsync();
         var stderrTask = p.StandardError.ReadToEndAsync();
@@ -274,14 +285,15 @@ public partial class MainWindow : Window
         var stderr = await stderrTask;
         if (p.ExitCode == 2)
         {
-            // Explicit exception: GitHub could not be reached before a sync
-            // started. Existing local content may be used.
-            SetStatus("GitHub is offline. Bestaande HVMC-content wordt gebruikt.");
+            // Explicit exception: the updater itself could not reach GitHub
+            // before a sync started. Existing local content may be used.
+            SetStatus("Updater is offline. Bestaande versie wordt gebruikt.");
             return;
         }
 
         if (p.ExitCode != 0)
         {
+            _contentUpdateFailed = true;
             var details = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr + (string.IsNullOrWhiteSpace(stdout) ? string.Empty : $"{Environment.NewLine}{Environment.NewLine}{stdout}");
             throw new InvalidOperationException(
                 string.IsNullOrWhiteSpace(details)
@@ -462,6 +474,32 @@ public partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(ex.Message) ? "Er is een onverwachte fout opgetreden." : ex.Message;
     }
 
+    private async Task RetryContentDownloadAsync()
+    {
+        PlayButton.IsEnabled = false;
+        ExitButton.IsEnabled = false;
+        _contentUpdateFailed = false;
+        try
+        {
+            SetStatus("HVMC content opnieuw downloaden...");
+            await RunUpdaterAsync(forceRedownload: true);
+            SetStatus("HVMC content is bijgewerkt. Klaar om te spelen.");
+            PlayButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            _contentUpdateFailed = true;
+            SetStatus("Opnieuw downloaden mislukt.");
+            ShowError("Opnieuw downloaden mislukt", ex);
+        }
+        finally
+        {
+            ExitButton.IsEnabled = true;
+            if (!PlayButton.IsEnabled && !_contentUpdateFailed)
+                PlayButton.IsEnabled = true;
+        }
+    }
+
     private void ShowError(string title, Exception ex)
     {
         var dialog = new Window
@@ -513,9 +551,34 @@ public partial class MainWindow : Window
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             IsDefault = true
         };
+        var buttonPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+
+        if (_contentUpdateFailed)
+        {
+            var retry = new System.Windows.Controls.Button
+            {
+                Content = "OPNIEUW DOWNLOADEN",
+                Width = 190,
+                Height = 40,
+                Margin = new Thickness(0, 14, 10, 0),
+                FontWeight = FontWeights.SemiBold
+            };
+            retry.Click += async (_, _) =>
+            {
+                dialog.Close();
+                await RetryContentDownloadAsync();
+            };
+            buttonPanel.Children.Add(retry);
+        }
+
         close.Click += (_, _) => dialog.Close();
-        Grid.SetRow(close, 2);
-        grid.Children.Add(close);
+        buttonPanel.Children.Add(close);
+        Grid.SetRow(buttonPanel, 2);
+        grid.Children.Add(buttonPanel);
 
         dialog.Content = grid;
         dialog.ShowDialog();
