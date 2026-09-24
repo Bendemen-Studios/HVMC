@@ -62,7 +62,9 @@ public partial class MainWindow : Window
     private async Task<bool> EnsurePcAuthorizedAsync()
     {
         if (string.IsNullOrWhiteSpace(_clientId)) return false;
-        using var response = await _http.GetAsync($"{PoolApi}/v1/launcher/pc/status?clientId={Uri.EscapeDataString(_clientId)}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{PoolApi}/v1/launcher/pc/status?clientId={Uri.EscapeDataString(_clientId)}");
+        if (!string.IsNullOrWhiteSpace(_deviceToken)) request.Headers.Add("x-hvmc-device-token", _deviceToken);
+        using var response = await _http.SendAsync(request);
         var json = await response.Content.ReadAsStringAsync();
         if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_deviceToken)) return true;
         if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && json.Contains("geblokkeerd", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Deze pc is door een beheerder geblokkeerd.");
@@ -360,19 +362,56 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    private static string GetStableClientId()
+    private string GetStableClientId()
     {
-        var value = Environment.MachineName.Trim();
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        var path = Path.Combine(_root, "client-id.txt");
+        try
+        {
+            if (File.Exists(path))
+            {
+                var saved = File.ReadAllText(path).Trim();
+                if (saved.Length == 64 && saved.All(Uri.IsHexDigit)) return saved.ToLowerInvariant();
+            }
+        }
+        catch { }
+
+        var value = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Environment.MachineName.Trim()))).ToLowerInvariant();
+        try { File.WriteAllText(path, value); } catch { }
+        return value;
     }
 
     private string? GetDeviceToken()
     {
-        var path = Path.Combine(_root, "device.token");
-        return File.Exists(path) ? File.ReadAllText(path).Trim() : null;
+        var candidates = new[]
+        {
+            Path.Combine(_root, "device.token"),
+            Path.Combine(_root, "device-token.txt"),
+            Path.Combine(_root, "device-token.dat")
+        };
+
+        foreach (var path in candidates)
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var token = File.ReadAllText(path).Trim();
+                if (token.Length < 20) continue;
+                if (!string.Equals(path, candidates[0], StringComparison.OrdinalIgnoreCase))
+                {
+                    try { File.WriteAllText(candidates[0], token); } catch { }
+                }
+                return token;
+            }
+            catch { }
+        }
+        return null;
     }
 
-    private void SaveDeviceToken(string token) => File.WriteAllText(Path.Combine(_root, "device.token"), token.Trim());
+    private void SaveDeviceToken(string token)
+    {
+        Directory.CreateDirectory(_root);
+        File.WriteAllText(Path.Combine(_root, "device.token"), token.Trim());
+    }
 
     private static string GetError(string json)
     {
