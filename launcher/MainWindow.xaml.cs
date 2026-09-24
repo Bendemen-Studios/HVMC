@@ -576,7 +576,7 @@ public partial class MainWindow : Window
         };
         var buttonPanel = new StackPanel
         {
-            Orientation = Orientation.Horizontal,
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right
         };
 
