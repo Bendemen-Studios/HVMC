@@ -19,8 +19,24 @@ function Get-GitHubHeaders { @{ 'User-Agent' = 'HVMC-School-Launcher'; 'Accept' 
 function ReadJson([string]$Path) { if (-not (Test-Path -LiteralPath $Path)) { return $null }; try { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } catch { return $null } }
 function SaveJson($Value,[string]$Path) { $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8 }
 function Safe([string]$Path) { $p=$Path.Replace('/','\'); if ([IO.Path]::IsPathRooted($p) -or $p.Contains('..')) { throw "Unsafe path: $p" }; return $p }
-function Download([string]$Url,[string]$Destination) { $parent=Split-Path -Parent $Destination; New-Item -ItemType Directory -Force -Path $parent | Out-Null; $tmp="$Destination.download"; try { Invoke-WebRequest -Uri $Url -OutFile $tmp -Headers (Get-GitHubHeaders) -UseBasicParsing -TimeoutSec 180; Move-Item -LiteralPath $tmp -Destination $Destination -Force } catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw "Download failed for \${Destination}: $($_.Exception.Message)" } }
-
+function Download([string]$Url,[string]$Destination) {
+    $parent=Split-Path -Parent $Destination
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    $tmp="$Destination.download"
+    $lastError=$null
+    for($attempt=1; $attempt -le 3; $attempt++){
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $tmp -Headers (Get-GitHubHeaders) -UseBasicParsing -TimeoutSec 180
+            Move-Item -LiteralPath $tmp -Destination $Destination -Force
+            return
+        } catch {
+            $lastError=$_.Exception.Message
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            if($attempt -lt 3){ Start-Sleep -Seconds ([Math]::Min(2*$attempt,5)) }
+        }
+    }
+    throw "Download failed for ${Destination}: $lastError"
+}
 function DownloadBatch($Files,[int]$BatchSize=6) {
     if($Files.Count -eq 0){ return }
     [System.Net.ServicePointManager]::DefaultConnectionLimit=8
@@ -72,7 +88,21 @@ function DownloadBatch($Files,[int]$BatchSize=6) {
         }
     } finally { $client.Dispose() }
 }
-function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) { if (-not (Test-Path -LiteralPath $FilePath)) { return $false }; try { $bytes=[IO.File]::ReadAllBytes($FilePath); $header=[Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0"); $all=New-Object byte[] ($header.Length+$bytes.Length); [Array]::Copy($header,0,$all,0,$header.Length); [Array]::Copy($bytes,0,$all,$header.Length,$bytes.Length); $hash=[Security.Cryptography.SHA1]::HashData($all); $hex=-join ($hash | ForEach-Object { $_.ToString('x2') }); return $hex -ieq $ExpectedSha } catch { return $false } }
+function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
+    if (-not (Test-Path -LiteralPath $FilePath)) { return $false }
+    try {
+        # SHA1.Create() is compatible with Windows PowerShell 5.1.
+        $bytes=[IO.File]::ReadAllBytes($FilePath)
+        $header=[Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")
+        $all=New-Object byte[] ($header.Length+$bytes.Length)
+        [Array]::Copy($header,0,$all,0,$header.Length)
+        [Array]::Copy($bytes,0,$all,$header.Length,$bytes.Length)
+        $sha1=[Security.Cryptography.SHA1]::Create()
+        try { $hash=$sha1.ComputeHash($all) } finally { $sha1.Dispose() }
+        $hex=-join ($hash | ForEach-Object { $_.ToString('x2') })
+        return $hex -ieq $ExpectedSha
+    } catch { return $false }
+}
 function Get-RemoteContentIndex {
     $headers=Get-GitHubHeaders
     $ref=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/ref/heads/$Branch" -Headers $headers -TimeoutSec 30
