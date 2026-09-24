@@ -536,16 +536,34 @@ public partial class MainWindow : Window
         Grid.SetRow(heading, 0);
         grid.Children.Add(heading);
 
+        var detailsBorder = new System.Windows.Controls.Border
+        {
+            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(214, 205, 185)),
+            BorderThickness = new Thickness(1),
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 253, 248)),
+            Padding = new Thickness(12)
+        };
+
         var details = new System.Windows.Controls.TextBlock
         {
             Text = GetFriendlyError(ex),
             TextWrapping = TextWrapping.Wrap,
-            VerticalAlignment = VerticalAlignment.Top,
             FontSize = 15,
             Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30))
         };
-        Grid.SetRow(details, 1);
-        grid.Children.Add(details);
+
+        var scrollViewer = new System.Windows.Controls.ScrollViewer
+        {
+            Content = details,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            CanContentScroll = true,
+            MaxHeight = 360
+        };
+
+        detailsBorder.Child = scrollViewer;
+        Grid.SetRow(detailsBorder, 1);
+        grid.Children.Add(detailsBorder);
 
         var close = new System.Windows.Controls.Button
         {
