@@ -272,10 +272,21 @@ public partial class MainWindow : Window
         await p.WaitForExitAsync();
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
+        if (p.ExitCode == 2)
+        {
+            // Explicit exception: GitHub could not be reached before a sync
+            // started. Existing local content may be used.
+            SetStatus("GitHub is offline. Bestaande HVMC-content wordt gebruikt.");
+            return;
+        }
+
         if (p.ExitCode != 0)
         {
             var details = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr + (string.IsNullOrWhiteSpace(stdout) ? string.Empty : $"{Environment.NewLine}{Environment.NewLine}{stdout}");
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(details) ? $"HVMC updater is gestopt met foutcode {p.ExitCode}." : details.Trim());
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(details)
+                    ? $"HVMC content-update is mislukt (foutcode {p.ExitCode}). Minecraft wordt niet gestart."
+                    : details.Trim());
         }
     }
 
