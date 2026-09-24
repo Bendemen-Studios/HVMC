@@ -69,7 +69,29 @@ public partial class App : System.Windows.Application
                 return;
             }
 
-            var updateResult = await CheckForLauncherUpdateAsync();
+            LauncherUpdateResult updateResult;
+            while (true)
+            {
+                try
+                {
+                    updateResult = await CheckForLauncherUpdateAsync();
+                    break;
+                }
+                catch (Exception updateEx)
+                {
+                    var retry = ShowErrorDialog(
+                        "Launcher-update mislukt",
+                        updateEx,
+                        "OPNIEUW DOWNLOADEN");
+
+                    if (!retry)
+                    {
+                        Shutdown(1);
+                        return;
+                    }
+                }
+            }
+
             if (updateResult == LauncherUpdateResult.Updated)
                 return;
 
@@ -82,35 +104,7 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            var retry = ShowErrorDialog(
-                "HVMC starten mislukt",
-                ex,
-                "OPNIEUW DOWNLOADEN");
-
-            if (retry)
-            {
-                try
-                {
-                    Directory.CreateDirectory(Root);
-
-                    var retryResult = await CheckForLauncherUpdateAsync();
-                    if (retryResult == LauncherUpdateResult.Updated)
-                        return;
-
-                    RegisterWindowsApp();
-                    CreateShortcuts();
-
-                    var window = new MainWindow();
-                    MainWindow = window;
-                    window.Show();
-                    return;
-                }
-                catch (Exception retryEx)
-                {
-                    ShowErrorDialog("Opnieuw downloaden mislukt", retryEx, null);
-                }
-            }
-
+            ShowErrorDialog("HVMC starten mislukt", ex, null);
             Shutdown(1);
         }
     }
