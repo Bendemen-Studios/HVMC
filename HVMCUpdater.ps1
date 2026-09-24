@@ -40,10 +40,27 @@ try {
     # Always refresh the small GitHub content index and compare local Git blob hashes.
     # This keeps later startups fast because unchanged files are never downloaded,
     # while new/updated content is still detected immediately.
-    $remoteFiles=@(Get-RemoteFiles)
-    if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
-
+    $ref=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/ref/heads/$Branch" -Headers (Get-GitHubHeaders) -TimeoutSec 30
+    $treeSha=[string]$ref.object.sha
+    $cachedTreeSha=if($state){[string]$state.contentTreeSha}else{''}
+    $remoteFiles=@()
     $newManifest=@{}
+
+    # Fast path: when the repository tree has not changed since the last successful sync,
+    # do not hash or download every file again. Only verify that managed files still exist.
+    if($cachedTreeSha -and $cachedTreeSha -eq $treeSha -and $oldEntries.Count -gt 0){
+        $missing=@($oldEntries.Keys | Where-Object { -not (Test-Path -LiteralPath (Join-Path $MinecraftDir (Safe $_))) })
+        if($missing.Count -eq 0){
+            foreach($key in $oldEntries.Keys){$newManifest[$key]=$oldEntries[$key]}
+            Log "Content is ongewijzigd ($treeSha). Bestaande HVMC-bestanden worden overgeslagen."
+        }
+    }
+
+    if($newManifest.Count -eq 0){
+        $remoteFiles=@(Get-RemoteFiles)
+        if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
+    }
+
     foreach($file in $remoteFiles){
         $relative=Safe ([string]$file.path).Substring(8)
         $destination=Join-Path $MinecraftDir $relative
@@ -55,7 +72,7 @@ try {
     foreach($oldPath in @($oldEntries.Keys)){if(-not $newManifest.ContainsKey($oldPath)){$obsolete=Join-Path $MinecraftDir (Safe $oldPath);if(Test-Path -LiteralPath $obsolete){Remove-Item -LiteralPath $obsolete -Force}}}
     $manifestFiles=foreach($key in ($newManifest.Keys|Sort-Object)){[pscustomobject]@{path=$key;sha=$newManifest[$key]}}
     SaveJson ([pscustomobject]@{version=$remoteVersion;files=@($manifestFiles);updated=(Get-Date).ToUniversalTime().ToString('o')}) $ManifestPath
-    SaveJson ([pscustomobject]@{installedVersion=$remoteVersion;updated=(Get-Date).ToUniversalTime().ToString('o')}) $StatePath
+    SaveJson ([pscustomobject]@{installedVersion=$remoteVersion;contentTreeSha=$treeSha;updated=(Get-Date).ToUniversalTime().ToString('o')}) $StatePath
 
     if(-not(Test-Path -LiteralPath $fabricJson)){
         throw "Gebundelde Fabric-installatie ontbreekt: content/versions/$FabricProfile/$FabricProfile.json"
