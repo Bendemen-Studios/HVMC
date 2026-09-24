@@ -32,4 +32,3 @@ net.minecraft.client.gui.screens.options.SoundOptionsScreen {
 
 net.minecraft.client.gui.screens.options.controls.ControlsScreen {
 }
-
