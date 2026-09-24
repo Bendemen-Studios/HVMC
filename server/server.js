@@ -16,9 +16,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, 'public'), { index: false, dotfiles: 'deny' }));
 app.get('/', (_req, res) => res.redirect('/admin'));
-app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get('/admin', (_req, res) => { res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); res.set('Pragma', 'no-cache'); res.set('Expires', '0'); res.sendFile(path.join(__dirname, 'public', 'admin.html')); });
 app.get('/admin/', (_req, res) => res.redirect('/admin'));
-app.get('/admin/pcs', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'pc-admin.html')));
+app.get('/admin/pcs', (_req, res) => { res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate'); res.set('Pragma', 'no-cache'); res.set('Expires', '0'); res.sendFile(path.join(__dirname, 'public', 'pc-admin.html')); });
 app.get('/admin/pcs/', (_req, res) => res.redirect('/admin/pcs'));
 
 const PORT = Number(process.env.PORT || 8080);
