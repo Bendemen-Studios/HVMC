@@ -82,9 +82,142 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            WpfMessageBox.Show(ex.Message, AppName, MessageBoxButton.OK, MessageBoxImage.Error);
+            var retry = ShowErrorDialog(
+                "HVMC starten mislukt",
+                ex,
+                "OPNIEUW DOWNLOADEN");
+
+            if (retry)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Root);
+
+                    var retryResult = await CheckForLauncherUpdateAsync();
+                    if (retryResult == LauncherUpdateResult.Updated)
+                        return;
+
+                    RegisterWindowsApp();
+                    CreateShortcuts();
+
+                    var window = new MainWindow();
+                    MainWindow = window;
+                    window.Show();
+                    return;
+                }
+                catch (Exception retryEx)
+                {
+                    ShowErrorDialog("Opnieuw downloaden mislukt", retryEx, null);
+                }
+            }
+
             Shutdown(1);
         }
+    }
+
+    private static bool ShowErrorDialog(string title, Exception ex, string? retryText)
+    {
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 760,
+            Height = 520,
+            MinWidth = 520,
+            MinHeight = 360,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.CanResize,
+            Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(247, 244, 236))
+        };
+
+        var grid = new Grid { Margin = new Thickness(22) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var heading = new System.Windows.Controls.TextBlock
+        {
+            Text = title,
+            FontSize = 20,
+            FontWeight = FontWeights.Bold,
+            Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(39, 36, 30)),
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        Grid.SetRow(heading, 0);
+        grid.Children.Add(heading);
+
+        var details = new System.Windows.Controls.TextBlock
+        {
+            Text = ex.Message,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 15,
+            Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(39, 36, 30))
+        };
+
+        var scrollViewer = new System.Windows.Controls.ScrollViewer
+        {
+            Content = details,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            CanContentScroll = true,
+            MaxHeight = 360
+        };
+
+        var detailsBorder = new System.Windows.Controls.Border
+        {
+            BorderBrush = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(214, 205, 185)),
+            BorderThickness = new Thickness(1),
+            Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(255, 253, 248)),
+            Padding = new Thickness(12),
+            Child = scrollViewer
+        };
+        Grid.SetRow(detailsBorder, 1);
+        grid.Children.Add(detailsBorder);
+
+        var buttonPanel = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+
+        var close = new System.Windows.Controls.Button
+        {
+            Content = "AFSLUITEN",
+            Width = 110,
+            Height = 40,
+            Margin = new Thickness(0, 14, 0, 0),
+            IsDefault = true
+        };
+        close.Click += (_, _) => dialog.Close();
+        buttonPanel.Children.Add(close);
+
+        if (!string.IsNullOrWhiteSpace(retryText))
+        {
+            var retry = new System.Windows.Controls.Button
+            {
+                Content = retryText,
+                Width = 190,
+                Height = 40,
+                Margin = new Thickness(0, 14, 10, 0),
+                FontWeight = FontWeights.SemiBold
+            };
+            retry.Click += (_, _) =>
+            {
+                dialog.DialogResult = true;
+                dialog.Close();
+            };
+            buttonPanel.Children.Insert(0, retry);
+        }
+
+        Grid.SetRow(buttonPanel, 2);
+        grid.Children.Add(buttonPanel);
+
+        dialog.Content = grid;
+        return dialog.ShowDialog() == true;
     }
 
     private static async Task<LauncherUpdateResult> CheckForLauncherUpdateAsync()
