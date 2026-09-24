@@ -69,7 +69,8 @@ public partial class App : System.Windows.Application
                 return;
             }
 
-            if (await CheckForLauncherUpdateAsync())
+            var updateResult = await CheckForLauncherUpdateAsync();
+            if (updateResult == LauncherUpdateResult.Updated)
                 return;
 
             RegisterWindowsApp();
@@ -86,7 +87,7 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private static async Task<bool> CheckForLauncherUpdateAsync()
+    private static async Task<LauncherUpdateResult> CheckForLauncherUpdateAsync()
     {
         try
         {
@@ -98,8 +99,18 @@ public partial class App : System.Windows.Application
                 request,
                 HttpCompletionOption.ResponseHeadersRead);
 
+            // GitHub is allowed to be unavailable. In that case the currently
+            // installed launcher may continue. Any other unexpected HTTP result
+            // is a hard stop: we must never start an outdated/broken launcher.
             if (!response.IsSuccessStatusCode)
-                return false;
+            {
+                var status = (int)response.StatusCode;
+                if (status == 408 || status == 429 || status >= 500)
+                    return LauncherUpdateResult.Offline;
+
+                throw new InvalidOperationException(
+                    $"GitHub releasecontrole mislukt (HTTP {status} {response.StatusCode}).");
+            }
 
             var json = await response.Content.ReadAsStringAsync();
             var release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
@@ -108,14 +119,22 @@ public partial class App : System.Windows.Application
                 release.Draft ||
                 release.Prerelease ||
                 string.IsNullOrWhiteSpace(release.TagName))
-                return false;
+            {
+                throw new InvalidOperationException(
+                    "GitHub gaf geen geldige stabiele HVMC-release terug.");
+            }
 
             var remoteText = release.TagName.Trim().TrimStart('v', 'V');
 
             if (!Version.TryParse(remoteText, out var remoteVersion) ||
-                !Version.TryParse(AppVersion, out var currentVersion) ||
-                remoteVersion <= currentVersion)
-                return false;
+                !Version.TryParse(AppVersion, out var currentVersion))
+            {
+                throw new InvalidOperationException(
+                    "De HVMC-versie van de launcher kon niet worden gecontroleerd.");
+            }
+
+            if (remoteVersion <= currentVersion)
+                return LauncherUpdateResult.UpToDate;
 
             var asset = release.Assets?
                 .FirstOrDefault(x => string.Equals(
@@ -124,7 +143,8 @@ public partial class App : System.Windows.Application
                     StringComparison.OrdinalIgnoreCase));
 
             if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
-                return false;
+                throw new InvalidOperationException(
+                    $"HVMC {release.TagName} is beschikbaar, maar bevat geen HVMCLauncher.exe.");
 
             var tempPath = Path.Combine(
                 Root,
@@ -142,7 +162,15 @@ public partial class App : System.Windows.Application
                     downloadRequest,
                     HttpCompletionOption.ResponseHeadersRead);
 
-                downloadResponse.EnsureSuccessStatusCode();
+                if (!downloadResponse.IsSuccessStatusCode)
+                {
+                    var status = (int)downloadResponse.StatusCode;
+                    if (status == 408 || status == 429 || status >= 500)
+                        return LauncherUpdateResult.Offline;
+
+                    throw new InvalidOperationException(
+                        $"HVMC {release.TagName} kon niet worden gedownload (HTTP {status} {downloadResponse.StatusCode}).");
+                }
 
                 await using (var source = await downloadResponse.Content.ReadAsStreamAsync())
                 await using (var target = File.Create(tempPath))
@@ -151,7 +179,7 @@ public partial class App : System.Windows.Application
                 }
 
                 var downloadedSize = new FileInfo(tempPath).Length;
-                if (asset.Size > 0 && downloadedSize != asset.Size)
+                if (downloadedSize <= 0 || (asset.Size > 0 && downloadedSize != asset.Size))
                     throw new InvalidOperationException(
                         "De nieuwe launcher heeft een onjuiste bestandsgrootte.");
 
@@ -180,12 +208,12 @@ public partial class App : System.Windows.Application
                     newHash,
                     StringComparison.OrdinalIgnoreCase))
                 {
-                    File.Delete(tempPath);
-                    return false;
+                    throw new InvalidOperationException(
+                        "GitHub meldt een nieuwere versie, maar het gedownloade bestand is identiek aan de huidige launcher.");
                 }
 
                 ScheduleSelfReplacement(InstalledExe, tempPath);
-                return true;
+                return LauncherUpdateResult.Updated;
             }
             catch
             {
@@ -193,14 +221,22 @@ public partial class App : System.Windows.Application
                 throw;
             }
         }
-        catch (Exception ex) when (
-            ex is HttpRequestException ||
-            ex is TaskCanceledException ||
-            ex is InvalidOperationException ||
-            ex is JsonException)
+        catch (HttpRequestException)
         {
-            return false;
+            // Network/DNS/TLS failures are the explicit offline exception.
+            return LauncherUpdateResult.Offline;
         }
+        catch (TaskCanceledException)
+        {
+            return LauncherUpdateResult.Offline;
+        }
+    }
+
+    private enum LauncherUpdateResult
+    {
+        UpToDate,
+        Updated,
+        Offline
     }
 
     private static async Task<string> Sha256HexAsync(string path)
