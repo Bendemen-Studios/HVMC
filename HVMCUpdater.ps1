@@ -10,6 +10,7 @@ $LogPath = Join-Path $Root 'bootstrapper.log'
 $McVersion = '26.2'
 $FabricLoader = '0.19.3'
 $FabricProfile = "fabric-loader-$FabricLoader-$McVersion"
+$fabricJson = Join-Path $MinecraftDir "versions\$FabricProfile\$FabricProfile.json"
 
 foreach ($dir in @($Root, $MinecraftDir, $MinecraftDir+'\mods', $MinecraftDir+'\config', $MinecraftDir+'\resourcepacks', $MinecraftDir+'\shaderpacks', $MinecraftDir+'\datapacks', $MinecraftDir+'\kubejs', (Join-Path $MinecraftDir 'versions'))) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 
