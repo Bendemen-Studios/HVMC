@@ -90,8 +90,10 @@ public partial class MainWindow : Window
             if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
             var result = JsonSerializer.Deserialize<PcRegistrationResponse>(json, JsonOptions) ?? throw new InvalidOperationException("Ongeldige pc-autorisatie-response.");
             if (string.IsNullOrWhiteSpace(result.DeviceToken)) throw new InvalidOperationException("De server gaf geen pc-token terug.");
-            _deviceToken = result.DeviceToken;
-            SaveDeviceToken(result.DeviceToken);
+            var deviceToken = result.DeviceToken?.Trim();
+            if (!IsValidHeaderValue(deviceToken)) throw new InvalidOperationException("De accountserver gaf een ongeldige pc-token terug.");
+            _deviceToken = deviceToken;
+            SaveDeviceToken(deviceToken!);
             AuthorizationPanel.Visibility = Visibility.Collapsed;
             await SendPcHeartbeatAsync();
             StartPcHeartbeat();
@@ -401,7 +403,7 @@ public partial class MainWindow : Window
             {
                 if (!File.Exists(path)) continue;
                 var token = File.ReadAllText(path).Trim();
-                if (token.Length < 20) continue;
+                if (token.Length < 20 || !IsValidHeaderValue(token)) continue;
                 if (!string.Equals(path, candidates[0], StringComparison.OrdinalIgnoreCase))
                 {
                     try { File.WriteAllText(candidates[0], token); } catch { }
@@ -415,9 +417,14 @@ public partial class MainWindow : Window
 
     private void SaveDeviceToken(string token)
     {
+        token = token.Trim();
+        if (!IsValidHeaderValue(token)) throw new InvalidOperationException("De pc-token bevat ongeldige tekens.");
         Directory.CreateDirectory(_root);
-        File.WriteAllText(Path.Combine(_root, "device.token"), token.Trim());
+        File.WriteAllText(Path.Combine(_root, "device.token"), token);
     }
+
+    private static bool IsValidHeaderValue(string? value)
+        => !string.IsNullOrEmpty(value) && value.IndexOfAny(['\\r', '\\n', '\\0']) < 0;
 
     private static string GetError(string json)
     {
