@@ -176,7 +176,7 @@ public partial class App : System.Windows.Application
         var buttonPanel = new System.Windows.Controls.StackPanel
         {
             Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Right
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
         };
 
         var close = new System.Windows.Controls.Button
