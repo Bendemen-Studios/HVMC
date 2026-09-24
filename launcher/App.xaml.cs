@@ -17,8 +17,8 @@ public partial class App : System.Windows.Application
 
     public static string AppVersion => typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
-    private const string LatestReleaseApi =
-        "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
+    private const string ReleasesApi =
+        "https://api.github.com/repos/Bendemen-Studios/HVMC/releases?per_page=20";
 
     private static readonly HttpClient Http = new()
     {
@@ -227,9 +227,9 @@ public partial class App : System.Windows.Application
                 request,
                 HttpCompletionOption.ResponseHeadersRead);
 
-            // GitHub is allowed to be unavailable. In that case the currently
-            // installed launcher may continue. Any other unexpected HTTP result
-            // is a hard stop: we must never start an outdated/broken launcher.
+            // GitHub may have a newer draft/prerelease at the top of its release
+            // list. Those releases must never block the launcher or be presented
+            // as a broken update. We explicitly select the newest stable release.
             if (!response.IsSuccessStatusCode)
             {
                 var status = (int)response.StatusCode;
@@ -241,18 +241,20 @@ public partial class App : System.Windows.Application
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
+            var releases = JsonSerializer.Deserialize<List<GitHubRelease>>(json, JsonOptions);
 
-            if (release is null ||
-                release.Draft ||
-                release.Prerelease ||
-                string.IsNullOrWhiteSpace(release.TagName))
-            {
-                throw new InvalidOperationException(
-                    "GitHub gaf geen geldige stabiele HVMC-release terug.");
-            }
+            var release = releases?
+                .Where(x => !x.Draft && !x.Prerelease && !string.IsNullOrWhiteSpace(x.TagName))
+                .Select(x => new { Release = x, Version = ParseReleaseVersion(x.TagName!) })
+                .Where(x => x.Version is not null)
+                .OrderByDescending(x => x.Version)
+                .Select(x => x.Release)
+                .FirstOrDefault();
 
-            var remoteText = release.TagName.Trim().TrimStart('v', 'V');
+            if (release is null)
+                return LauncherUpdateResult.UpToDate;
+
+            var remoteText = release.TagName!.Trim().TrimStart('v', 'V');
 
             if (!Version.TryParse(remoteText, out var remoteVersion) ||
                 !Version.TryParse(AppVersion, out var currentVersion))
@@ -365,6 +367,12 @@ public partial class App : System.Windows.Application
         UpToDate,
         Updated,
         Offline
+    }
+
+    private static Version? ParseReleaseVersion(string tagName)
+    {
+        var versionText = tagName.Trim().TrimStart('v', 'V');
+        return Version.TryParse(versionText, out var version) ? version : null;
     }
 
     private static async Task<string> Sha256HexAsync(string path)
