@@ -264,10 +264,16 @@ public partial class MainWindow : Window
             RedirectStandardOutput = true, RedirectStandardError = true,
             ArgumentList = { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", updater }
         }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
-        var stdout = await p.StandardOutput.ReadToEndAsync();
-        var stderr = await p.StandardError.ReadToEndAsync();
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
         await p.WaitForExitAsync();
-        if (p.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        if (p.ExitCode != 0)
+        {
+            var details = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr + (string.IsNullOrWhiteSpace(stdout) ? string.Empty : $"{Environment.NewLine}{Environment.NewLine}{stdout}");
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(details) ? $"HVMC updater is gestopt met foutcode {p.ExitCode}." : details.Trim());
+        }
     }
 
     private async Task<LeaseResponse> AcquireLeaseAsync(string clientId, string deviceToken)
@@ -425,7 +431,71 @@ public partial class MainWindow : Window
     }
 
     private void SetStatus(string text) => Dispatcher.Invoke(() => StatusText.Text = text);
-    private void ShowError(string title, Exception ex) => WpfMessageBox.Show(ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+
+    private void ShowError(string title, Exception ex)
+    {
+        var dialog = new Window
+        {
+            Title = title,
+            Owner = this,
+            Width = 760,
+            Height = 520,
+            MinWidth = 520,
+            MinHeight = 360,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode = ResizeMode.CanResize,
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 244, 236))
+        };
+
+        var grid = new Grid { Margin = new Thickness(22) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var heading = new TextBlock
+        {
+            Text = title,
+            FontSize = 20,
+            FontWeight = FontWeights.Bold,
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30)),
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        Grid.SetRow(heading, 0);
+        grid.Children.Add(heading);
+
+        var details = new TextBox
+        {
+            Text = ex.ToString(),
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+            FontSize = 12,
+            Background = System.Windows.Media.Brushes.White,
+            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(201, 185, 143)),
+            Padding = new Thickness(10)
+        };
+        Grid.SetRow(details, 1);
+        grid.Children.Add(details);
+
+        var close = new System.Windows.Controls.Button
+        {
+            Content = "OK",
+            Width = 110,
+            Height = 40,
+            Margin = new Thickness(0, 14, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            IsDefault = true
+        };
+        close.Click += (_, _) => dialog.Close();
+        Grid.SetRow(close, 2);
+        grid.Children.Add(close);
+
+        dialog.Content = grid;
+        dialog.ShowDialog();
+    }
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private sealed record PcRegistrationResponse(string DeviceToken);
     private sealed record LeaseResponse(string LeaseId, string Username, string MinecraftAccessToken, string Uuid, string? Xuid, string AccountName);
