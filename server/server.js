@@ -69,7 +69,7 @@ function getEmailTransporter() {
 }
 async function sendAdminEmailCode(to, code) {
   await getEmailTransporter().sendMail({
-    from: EMAIL_FROM,
+    from: { name: 'HVMC Account Dashboard', address: EMAIL_FROM },
     to,
     subject: 'HVMC Account Dashboard',
     text: `Je HVMC Account Dashboard-verificatiecode is: ${code}\n\nDeze code is 10 minuten geldig. Als je dit niet hebt aangevraagd, kun je deze e-mail negeren.`,
