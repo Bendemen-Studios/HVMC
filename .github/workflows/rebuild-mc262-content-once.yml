@@ -1,0 +1,126 @@
+name: One-time Minecraft 26.2 Fabric content rebuild
+
+on:
+  push:
+    paths:
+      - '.github/trigger-mc262-content'
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild Minecraft 26.2 Fabric runtime and mods
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MC='26.2'
+          LOADER='0.19.3'
+
+          rm -rf content/libraries content/versions
+          find content/mods -maxdepth 1 -type f -name '*.jar' -delete
+          mkdir -p content/libraries content/versions content/mods
+
+          echo "Downloading Fabric loader profile..."
+          curl -fsSL "https://meta.fabricmc.net/v2/versions/loader/$MC/$LOADER/profile/json" -o /tmp/fabric-profile.json
+          test -s /tmp/fabric-profile.json
+
+          PROFILE_DIR="content/versions/fabric-loader-$LOADER-$MC"
+          mkdir -p "$PROFILE_DIR"
+          jq -S . /tmp/fabric-profile.json > "$PROFILE_DIR/fabric-loader-$LOADER-$MC.json"
+
+          echo "Downloading Fabric libraries..."
+          while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            IFS=':' read -r group artifact version rest <<< "$name"
+            [ -n "${rest:-}" ] && continue
+            relative="${group//.//}/$artifact/$version/$artifact-$version.jar"
+            destination="content/libraries/$relative"
+            mkdir -p "$(dirname "$destination")"
+            echo "  $name"
+            curl -fsSL "https://maven.fabricmc.net/$relative" -o "$destination"
+          done < <(jq -r '.libraries[]?.name // empty' /tmp/fabric-profile.json)
+
+          mods=(
+            immediatelyfast
+            appleskin
+            cloth-config
+            drippy-loading-screen
+            dynamic-fps
+            entityculling
+            fabric-api
+            fancymenu
+            ferrite-core
+            konkrete
+            language-reload
+            melody
+            moreculling
+            not-enough-animations
+            packet-fixer
+            reeses-sodium-options
+            smart-fps-booster
+            sodium-extra
+            sodium
+          )
+
+          echo "Downloading Fabric-compatible Minecraft $MC mod releases..."
+          for slug in "${mods[@]}"; do
+            json="/tmp/$slug.json"
+            curl -fsSL "https://api.modrinth.com/v3/project/$slug/version?loaders=%5B%22fabric%22%5D&game_versions=%5B%22$MC%22%5D" -o "$json"
+            test -s "$json"
+
+            selected=$(jq -c --arg slug "$slug" '
+              [
+                .[]
+                | select(.version_type == "release" or (.version_type == "beta" and $slug == "appleskin"))
+                | select((.version_number | test("alpha|snapshot|rc"; "i")) | not)
+              ]
+              | sort_by(.date_published)
+              | last
+            ' "$json")
+
+            if [[ -z "$selected" || "$selected" == "null" ]]; then
+              echo "ERROR: no usable Fabric build for Minecraft $MC: $slug" >&2
+              exit 1
+            fi
+
+            version=$(jq -r '.version_number' <<<"$selected")
+            filename=$(jq -r '(.files[] | select(.primary == true) | .filename), (.files[] | select(.filename | endswith(".jar")) | .filename) | select(. != null and . != "")' <<<"$selected" | head -n 1)
+            file=$(jq -r '(.files[] | select(.primary == true) | .url), (.files[] | select(.filename | endswith(".jar")) | .url) | select(. != null and . != "")' <<<"$selected" | head -n 1)
+
+            if [[ -z "$filename" || -z "$file" ]]; then
+              echo "ERROR: no JAR file found for $slug $version" >&2
+              exit 1
+            fi
+
+            echo "  $slug -> $version -> $filename"
+            curl -fsSL "$file" -o "content/mods/$filename"
+          done
+
+          echo "Validating downloaded JARs..."
+          while IFS= read -r jar; do
+            unzip -tq "$jar" >/dev/null
+          done < <(find content/mods -maxdepth 1 -type f -name '*.jar' -print)
+
+          if find content/mods -maxdepth 1 -type f -name '*.jar' -print | grep -E '26\.3|1\.21\.'; then
+            echo "ERROR: a mod filename appears to target 26.3/1.21.x." >&2
+            exit 1
+          fi
+
+          echo "Removing one-time rebuild workflow and trigger..."
+          rm -f .github/trigger-mc262-content
+          rm -f .github/workflows/rebuild-mc262-content-once.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add content .github/trigger-mc262-content .github/workflows/rebuild-mc262-content-once.yml
+          git commit -m "Set Minecraft 26.2 Fabric content"
+          git push
