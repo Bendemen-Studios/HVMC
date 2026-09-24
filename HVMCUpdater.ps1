@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+param([switch]$ForceRedownload)
 
 $Repo = 'Bendemen-Studios/HVMC'
 $Branch = 'main'
@@ -144,6 +145,11 @@ try {
     Log "HVMC runtime wordt als content geleverd: Minecraft $McVersion / Fabric $FabricLoader"
 
     $state=ReadJson $StatePath
+    if($ForceRedownload){
+        Log 'Handmatige herdownload aangevraagd. Bestaande HVMC-manifest wordt genegeerd.'
+        $state=$null
+        $oldManifest=$null
+    }
     $installedVersion=if($state){[string]$state.installedVersion}else{''}
     $oldManifest=ReadJson $ManifestPath
     $oldEntries=@{}
