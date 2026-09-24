@@ -577,6 +577,7 @@ public partial class MainWindow : Window
         var buttonPanel = new StackPanel
         {
             Orientation = System.Windows.Controls.Orientation.Horizontal,
+            // WPF orientation is fully qualified to avoid the Windows Forms name collision.
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right
         };
 
