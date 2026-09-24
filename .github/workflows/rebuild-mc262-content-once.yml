@@ -71,15 +71,17 @@ jobs:
             sodium
           )
 
-          echo "Downloading Fabric-compatible Minecraft $MC mod releases..."
+          echo "Downloading releases that explicitly support Fabric + Minecraft $MC..."
           for slug in "${mods[@]}"; do
             json="/tmp/$slug.json"
-            curl -fsSL "https://api.modrinth.com/v3/project/$slug/version?loaders=%5B%22fabric%22%5D&game_versions=%5B%22$MC%22%5D" -o "$json"
+            curl -fsSL "https://api.modrinth.com/v3/project/$slug/version?loaders=%5B%22fabric%22%5D" -o "$json"
             test -s "$json"
 
-            selected=$(jq -c --arg slug "$slug" '
+            selected=$(jq -c --arg mc "$MC" --arg slug "$slug" '
               [
                 .[]
+                | select((.game_versions // []) | index($mc))
+                | select(.loaders | index("fabric"))
                 | select(.version_type == "release" or (.version_type == "beta" and $slug == "appleskin"))
                 | select((.version_number | test("alpha|snapshot|rc"; "i")) | not)
               ]
@@ -88,7 +90,7 @@ jobs:
             ' "$json")
 
             if [[ -z "$selected" || "$selected" == "null" ]]; then
-              echo "ERROR: no usable Fabric build for Minecraft $MC: $slug" >&2
+              echo "ERROR: no usable Fabric build explicitly listing Minecraft $MC: $slug" >&2
               exit 1
             fi
 
@@ -105,7 +107,13 @@ jobs:
             curl -fsSL "$file" -o "content/mods/$filename"
           done
 
+          echo "Preserving custom Adaptive Graphics only when it explicitly supports $MC..."
+          # Adaptive Graphics currently targets Minecraft 1.21.11, so it is intentionally
+          # excluded from the 26.2 managed set unless a future 26.2 build is published.
+
           echo "Validating downloaded JARs..."
+          count=$(find content/mods -maxdepth 1 -type f -name '*.jar' | wc -l)
+          test "$count" -ge 1
           while IFS= read -r jar; do
             unzip -tq "$jar" >/dev/null
           done < <(find content/mods -maxdepth 1 -type f -name '*.jar' -print)
