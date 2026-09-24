@@ -78,26 +78,14 @@ try {
     Log "Nieuwe of gewijzigde HVMC-content gevonden. Bestanden controleren..."
     $newManifest=@{}
 
-    # Fast path: when the repository tree has not changed since the last successful sync,
-    # do not hash or download every file again. Only verify that managed files still exist.
-    if($cachedTreeSha -and $cachedTreeSha -eq $treeSha -and $oldEntries.Count -gt 0){
-        $missing=@($oldEntries.Keys | Where-Object { -not (Test-Path -LiteralPath (Join-Path $MinecraftDir (Safe $_))) })
-        if($missing.Count -eq 0){
-            foreach($key in $oldEntries.Keys){$newManifest[$key]=$oldEntries[$key]}
-            Log "Content is ongewijzigd ($treeSha). Bestaande HVMC-bestanden worden overgeslagen."
-        }
-    }
-
-    if($newManifest.Count -eq 0){
-        $remoteFiles=@(Get-RemoteFiles)
-        if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
-    }
-
     foreach($file in $remoteFiles){
         $relative=Safe ([string]$file.path).Substring(8)
         $destination=Join-Path $MinecraftDir $relative
         $expectedSha=[string]$file.sha
-        if(-not(Test-GitBlobSha $destination $expectedSha)){Download ([string]$file.download) $destination;Log "Updated: $relative"}
+        if(-not(Test-GitBlobSha $destination $expectedSha)){
+            Download ([string]$file.download) $destination
+            Log "Updated: $relative"
+        }
         $newManifest[$relative]=$expectedSha
     }
 
