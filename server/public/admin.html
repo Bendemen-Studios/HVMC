@@ -17,7 +17,7 @@ main{position:relative;max-width:1180px;width:100%;margin:0 auto;padding:34px 20
 </head>
 <body>
 <main id="loginPage" class="loginWrap">
-  <div class="loginBrand"><img class="mark brandLogo" src="/HV.png" alt="HVMC"><div class="kicker" style="margin-top:14px">Bendemen Studios</div><h1>HVMC Admin</h1><div class="sub">Beheer de centrale Minecraft-accountpool.</div></div>
+  <div class="loginBrand"><img class="mark brandLogo" src="/HV.png" alt="HVMC"><div class="kicker" style="margin-top:14px">Bendemen Studios</div><h1>HVMC Account Dashboard</h1><div class="sub">Beheer de centrale Minecraft-accountpool.</div></div>
   <section id="passwordPanel" class="panel">
     <h2>Stap 1 — Beheerderslogin</h2>
     <div class="row"><input id="username" autocomplete="username" placeholder="Gebruikersnaam" style="flex:1"><input id="password" type="password" autocomplete="current-password" placeholder="Wachtwoord" style="flex:1"><button id="loginBtn">Inloggen</button></div>
@@ -33,7 +33,7 @@ main{position:relative;max-width:1180px;width:100%;margin:0 auto;padding:34px 20
 </main>
 
 <main id="appPage" class="hidden">
-  <div class="top"><div class="brand"><img class="mark brandLogo" src="/HV.png" alt="HVMC"><div><div class="kicker">Bendemen Studios</div><h1>HVMC Admin</h1><div class="sub">Centrale Minecraft-accountpool</div></div></div><div class="row"><button id="refresh" class="secondary">Vernieuwen</button><button class="secondary" onclick="location.href='/admin/pcs'">PC's</button><button id="reset" class="danger">Alles resetten</button><button id="logout" class="ghost">Uitloggen</button></div></div>
+  <div class="top"><div class="brand"><img class="mark brandLogo" src="/HV.png" alt="HVMC"><div><div class="kicker">Bendemen Studios</div><h1>HVMC Account Dashboard</h1><div class="sub">Centrale Minecraft-accountpool</div></div></div><div class="row"><button id="refresh" class="secondary">Vernieuwen</button><button class="secondary" onclick="location.href='/admin/pcs'">PC's</button><button id="reset" class="danger">Alles resetten</button><button id="logout" class="ghost">Uitloggen</button></div></div>
   <section class="panel"><h2>Accounts</h2><div class="row"><input id="label" placeholder="Bijv. HVMC Account 06" style="flex:1"><input id="slot" placeholder="account-06 (optioneel)" style="flex:1"><button id="addBtn">Account toevoegen</button></div><div id="msg" class="msg">Laden…</div><div id="summary" class="summary"></div><div id="grid" class="grid"></div></section>
 </main>
 <script>
