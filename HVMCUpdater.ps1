@@ -23,6 +23,7 @@ function Download([string]$Url,[string]$Destination) { $parent=Split-Path -Paren
 
 function DownloadBatch($Files,[int]$BatchSize=6) {
     if($Files.Count -eq 0){ return }
+    [System.Net.ServicePointManager]::DefaultConnectionLimit=8
     $client=New-Object System.Net.Http.HttpClient
     $client.DefaultRequestHeaders.UserAgent.ParseAdd('HVMC-School-Launcher')
     try {
