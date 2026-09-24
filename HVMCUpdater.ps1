@@ -1,5 +1,6 @@
-$ErrorActionPreference = 'Stop'
 param([switch]$ForceRedownload)
+
+$ErrorActionPreference = 'Stop'
 
 $Repo = 'Bendemen-Studios/HVMC'
 $Branch = 'main'
