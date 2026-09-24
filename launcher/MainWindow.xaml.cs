@@ -263,10 +263,13 @@ public partial class MainWindow : Window
         {
             await resource.CopyToAsync(target);
         }
-        using var p = Process.Start(new ProcessStartInfo
+        var startInfo = new ProcessStartInfo
         {
-            FileName = "powershell.exe", UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = true, RedirectStandardError = true,
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             ArgumentList =
             {
                 "-NoProfile",
@@ -276,8 +279,10 @@ public partial class MainWindow : Window
             }
         };
         if (forceRedownload)
-            p.StartInfo.ArgumentList.Add("-ForceRedownload")
-        }) ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
+            startInfo.ArgumentList.Add("-ForceRedownload");
+
+        using var p = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
         var stdoutTask = p.StandardOutput.ReadToEndAsync();
         var stderrTask = p.StandardError.ReadToEndAsync();
         await p.WaitForExitAsync();
