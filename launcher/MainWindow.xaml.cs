@@ -20,7 +20,7 @@ public partial class MainWindow : Window
     private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "26.2";
     private const string FabricVersion = "0.19.3";
-    private const string LauncherVersion = App.AppVersion;
+    private static readonly string LauncherVersion = App.AppVersion;
     private const int MaximumRamMb = 4096;
     private const int PcHeartbeatSeconds = 30;
     private const int LeaseHeartbeatSeconds = 30;
