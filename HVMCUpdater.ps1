@@ -21,7 +21,16 @@ function SaveJson($Value,[string]$Path) { $Value | ConvertTo-Json -Depth 20 | Se
 function Safe([string]$Path) { $p=$Path.Replace('/','\'); if ([IO.Path]::IsPathRooted($p) -or $p.Contains('..')) { throw "Unsafe path: $p" }; return $p }
 function Download([string]$Url,[string]$Destination) { $parent=Split-Path -Parent $Destination; New-Item -ItemType Directory -Force -Path $parent | Out-Null; $tmp="$Destination.download"; try { Invoke-WebRequest -Uri $Url -OutFile $tmp -Headers (Get-GitHubHeaders) -UseBasicParsing -TimeoutSec 180; Move-Item -LiteralPath $tmp -Destination $Destination -Force } catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw "Download failed for ${Destination}: $($_.Exception.Message)" } }
 function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) { if (-not (Test-Path -LiteralPath $FilePath)) { return $false }; try { $bytes=[IO.File]::ReadAllBytes($FilePath); $header=[Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0"); $all=New-Object byte[] ($header.Length+$bytes.Length); [Array]::Copy($header,0,$all,0,$header.Length); [Array]::Copy($bytes,0,$all,$header.Length,$bytes.Length); $hash=[Security.Cryptography.SHA1]::HashData($all); $hex=-join ($hash | ForEach-Object { $_.ToString('x2') }); return $hex -ieq $ExpectedSha } catch { return $false } }
-function Get-RemoteFiles { $headers=Get-GitHubHeaders; $ref=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/ref/heads/$Branch" -Headers $headers -TimeoutSec 30; $treeSha=[string]$ref.object.sha; $tree=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/trees/$treeSha`?recursive=1" -Headers $headers -TimeoutSec 30; @($tree.tree | Where-Object { $_.type -eq 'blob' -and $_.path -like 'content/*' } | ForEach-Object { [pscustomobject]@{path=[string]$_.path;sha=[string]$_.sha;download="https://raw.githubusercontent.com/$Repo/$Branch/$($_.path)"} }) }
+function Get-RemoteContentIndex {
+    $headers=Get-GitHubHeaders
+    $ref=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/ref/heads/$Branch" -Headers $headers -TimeoutSec 30
+    $treeSha=[string]$ref.object.sha
+    $tree=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/trees/$treeSha`?recursive=1" -Headers $headers -TimeoutSec 30
+    $files=@($tree.tree | Where-Object { $_.type -eq 'blob' -and $_.path -like 'content/*' } | ForEach-Object {
+        [pscustomobject]@{path=[string]$_.path;sha=[string]$_.sha;download="https://raw.githubusercontent.com/$Repo/$Branch/$($_.path)"}
+    })
+    return [pscustomobject]@{TreeSha=$treeSha;Files=$files}
+}
 
 try {
     Log 'HVMC School Launcher updater gestart.'
@@ -37,13 +46,36 @@ try {
     $oldEntries=@{}
     if($oldManifest -and $oldManifest.files){foreach($entry in @($oldManifest.files)){$oldEntries[[string]$entry.path]=[string]$entry.sha}}
 
-    # Always refresh the small GitHub content index and compare local Git blob hashes.
-    # This keeps later startups fast because unchanged files are never downloaded,
-    # while new/updated content is still detected immediately.
-    $ref=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/ref/heads/$Branch" -Headers (Get-GitHubHeaders) -TimeoutSec 30
-    $treeSha=[string]$ref.object.sha
-    $cachedTreeSha=if($state){[string]$state.contentTreeSha}else{''}
-    $remoteFiles=@()
+    # First compare the Git tree SHA. If the remote content tree has not changed
+    # since the last successful sync, skip the expensive recursive tree/hash pass.
+    $remoteIndex=Get-RemoteContentIndex
+    $remoteTreeSha=[string]$remoteIndex.TreeSha
+    $remoteFiles=@($remoteIndex.Files)
+    if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
+
+    $missingLocal=@($oldEntries.Keys | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $MinecraftDir (Safe $_)))
+    })
+    $fastPath=(
+        -not [string]::IsNullOrWhiteSpace([string]$state.remoteTreeSha) -and
+        [string]$state.remoteTreeSha -eq $remoteTreeSha -and
+        $oldEntries.Count -gt 0 -and
+        $missingLocal.Count -eq 0 -and
+        (Test-Path -LiteralPath $fabricJson)
+    )
+
+    if($fastPath){
+        Log "Geen contentwijzigingen gevonden. Snelle sync: bestaande HVMC-content wordt hergebruikt."
+        SaveJson ([pscustomobject]@{
+            installedVersion=$remoteVersion
+            remoteTreeSha=$remoteTreeSha
+            updated=(Get-Date).ToUniversalTime().ToString('o')
+        }) $StatePath
+        Log "HVMC content synchronisatie overgeslagen; alles is al actueel."
+        exit 0
+    }
+
+    Log "Nieuwe of gewijzigde HVMC-content gevonden. Bestanden controleren..."
     $newManifest=@{}
 
     # Fast path: when the repository tree has not changed since the last successful sync,
