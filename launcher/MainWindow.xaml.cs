@@ -8,8 +8,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using Forms = System.Windows.Forms;
-using WpfMessageBox = System.Windows.MessageBox;
 
 namespace HVMCLauncher;
 
