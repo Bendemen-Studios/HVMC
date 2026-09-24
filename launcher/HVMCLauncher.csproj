@@ -8,6 +8,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>hvmc.ico</ApplicationIcon>
+    <HVMCVersion>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\..\version.txt').Trim())</HVMCVersion>
+    <Version>$(HVMCVersion)</Version>
+    <AssemblyVersion>$(HVMCVersion)</AssemblyVersion>
+    <FileVersion>$(HVMCVersion)</FileVersion>
+    <InformationalVersion>$(HVMCVersion)</InformationalVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
