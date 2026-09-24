@@ -424,7 +424,7 @@ public partial class MainWindow : Window
     }
 
     private static bool IsValidHeaderValue(string? value)
-        => !string.IsNullOrEmpty(value) && value.IndexOfAny(['\\r', '\\n', '\\0']) < 0;
+        => !string.IsNullOrEmpty(value) && value.IndexOfAny(new[] { '\r', '\n', '\0' }) < 0;
 
     private static string GetError(string json)
     {
