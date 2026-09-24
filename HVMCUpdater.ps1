@@ -114,6 +114,27 @@ function Get-RemoteContentIndex {
     return [pscustomobject]@{TreeSha=$treeSha;Files=$files}
 }
 
+$syncStarted = $false
+
+function Test-GitHubOfflineError($Exception) {
+    $e = $Exception
+    while ($null -ne $e) {
+        if ($e -is [System.Net.WebException]) {
+            $response = $e.Response
+            if ($null -eq $response) { return $true }
+            try {
+                $status = [int]$response.StatusCode
+                return ($status -eq 408 -or $status -eq 429 -or $status -ge 500)
+            } catch {
+                return $true
+            }
+        }
+        if ($e -is [System.TimeoutException]) { return $true }
+        $e = $e.InnerException
+    }
+    return $false
+}
+
 try {
     Log 'HVMC School Launcher updater gestart.'
     $versionResponse=Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-School-Launcher'} -UseBasicParsing -TimeoutSec 20
@@ -134,6 +155,11 @@ try {
     $remoteTreeSha=[string]$remoteIndex.TreeSha
     $remoteFiles=@($remoteIndex.Files)
     if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
+
+    # From this point onward we have a valid GitHub content index. If GitHub
+    # disappears during the actual sync, do NOT allow Minecraft to start with
+    # partially updated content.
+    $syncStarted = $true
 
     $missingLocal=@($oldEntries.Keys | Where-Object {
         -not (Test-Path -LiteralPath (Join-Path $MinecraftDir (Safe $_)))
@@ -198,5 +224,9 @@ try {
     exit 0
 } catch {
     Log "Updater mislukt: $($_.Exception.Message)"
+    if(-not $syncStarted -and (Test-GitHubOfflineError $_.Exception)){
+        Log 'GitHub is tijdelijk niet bereikbaar. Bestaande lokale HVMC-content mag worden gebruikt.'
+        exit 2
+    }
     exit 1
 } finally {Log 'HVMC updater afgerond.'}
