@@ -17,3 +17,19 @@ me.flashyreese.mods.reeses_sodium_options.client.gui.SodiumVideoOptionsScreen {
 
 net.minecraft.client.gui.screens.AccessibilityOnboardingScreen {
 }
+
+net.minecraft.client.gui.screens.options.OptionsScreen {
+}
+
+net.minecraft.client.gui.screens.options.AccessibilityOptionsScreen {
+}
+
+net.minecraft.client.gui.screens.ConfirmLinkScreen {
+}
+
+net.minecraft.client.gui.screens.options.SoundOptionsScreen {
+}
+
+net.minecraft.client.gui.screens.options.controls.ControlsScreen {
+}
+
