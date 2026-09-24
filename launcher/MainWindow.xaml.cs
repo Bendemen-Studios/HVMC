@@ -440,6 +440,17 @@ public partial class MainWindow : Window
 
     private void SetStatus(string text) => Dispatcher.Invoke(() => StatusText.Text = text);
 
+    private static string GetFriendlyError(Exception ex)
+    {
+        if (ex is HttpRequestException) return "De accountserver is niet bereikbaar. Controleer je internetverbinding en probeer het opnieuw.";
+        if (ex is TaskCanceledException) return "De verbinding met de accountserver duurde te lang. Probeer het opnieuw.";
+        if (ex is JsonException) return "De accountserver stuurde een ongeldig antwoord. Probeer het opnieuw.";
+        if (ex is UnauthorizedAccessException) return "HVMC heeft geen toegang tot de benodigde bestanden. Start de launcher opnieuw of controleer de bestandsrechten.";
+        if (ex is IOException) return "HVMC kon een bestand niet lezen of schrijven. Controleer of de launcher toegang heeft tot de map.";
+        if (ex is InvalidOperationException) return ex.Message;
+        return string.IsNullOrWhiteSpace(ex.Message) ? "Er is een onverwachte fout opgetreden." : ex.Message;
+    }
+
     private void ShowError(string title, Exception ex)
     {
         var dialog = new Window
@@ -471,19 +482,13 @@ public partial class MainWindow : Window
         Grid.SetRow(heading, 0);
         grid.Children.Add(heading);
 
-        var details = new System.Windows.Controls.TextBox
+        var details = new System.Windows.Controls.TextBlock
         {
-            Text = ex.ToString(),
-            IsReadOnly = true,
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            FontFamily = new System.Windows.Media.FontFamily("Consolas"),
-            FontSize = 12,
-            Background = System.Windows.Media.Brushes.White,
-            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(201, 185, 143)),
-            Padding = new Thickness(10)
+            Text = GetFriendlyError(ex),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Top,
+            FontSize = 15,
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30))
         };
         Grid.SetRow(details, 1);
         grid.Children.Add(details);
