@@ -19,7 +19,7 @@ public partial class MainWindow : Window
     private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "26.2";
     private const string FabricVersion = "0.19.3";
-    private const string LauncherVersion = "2.4.0";
+    private const string LauncherVersion = App.AppVersion;
     private const int MaximumRamMb = 4096;
     private const int PcHeartbeatSeconds = 30;
     private const int LeaseHeartbeatSeconds = 30;
@@ -48,8 +48,7 @@ public partial class MainWindow : Window
         {
             _clientId = GetStableClientId();
             _deviceToken = GetDeviceToken();
-            SetStatus("HVMC School Launcher controleren...");
-            if (await CheckForLauncherUpdateAsync()) return;
+            SetStatus("HVMC School Launcher voorbereiden...");
             if (!await EnsurePcAuthorizedAsync()) return;
             await SendPcHeartbeatAsync();
             StartPcHeartbeat();
