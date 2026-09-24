@@ -464,7 +464,7 @@ public partial class MainWindow : Window
         Grid.SetRow(heading, 0);
         grid.Children.Add(heading);
 
-        var details = new TextBox
+        var details = new System.Windows.Controls.TextBox
         {
             Text = ex.ToString(),
             IsReadOnly = true,
@@ -487,7 +487,7 @@ public partial class MainWindow : Window
             Width = 110,
             Height = 40,
             Margin = new Thickness(0, 14, 0, 0),
-            HorizontalAlignment = HorizontalAlignment.Right,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
             IsDefault = true
         };
         close.Click += (_, _) => dialog.Close();
