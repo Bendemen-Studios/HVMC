@@ -64,7 +64,16 @@ public partial class MainWindow : Window
             SetStatus("Klaar om te spelen.");
             PlayButton.IsEnabled = true;
         }
-        catch (Exception ex) { SetStatus("Controle mislukt."); ShowError("Controle mislukt", ex); ExitButton.IsEnabled = true; }
+        catch (DeviceBlockedException)
+        {
+            await HandleDeviceBlockedAsync();
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Controle mislukt.");
+            ShowError("Controle mislukt", ex);
+            ExitButton.IsEnabled = true;
+        }
     }
 
     private async Task<bool> EnsurePcAuthorizedAsync()
@@ -295,7 +304,7 @@ public partial class MainWindow : Window
             _minecraftProcess = null;
             await Dispatcher.InvokeAsync(() =>
             {
-                MessageBox.Show(
+                System.Windows.MessageBox.Show(
                     this,
                     "Je bent geblokkeerd, Neem contact op met info@bendemen.nl voor meer informatie.",
                     "HVMC",
@@ -833,7 +842,7 @@ public partial class MainWindow : Window
 
         if (_contentUpdateFailed)
         {
-            var retry = MessageBox.Show(
+            var retry = System.Windows.MessageBox.Show(
                 this,
                 "HVMC kon de benodigde bestanden niet bijwerken.\n\nWil je het opnieuw proberen?",
                 title,
@@ -848,7 +857,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        MessageBox.Show(
+        System.Windows.MessageBox.Show(
             this,
             message,
             title,
