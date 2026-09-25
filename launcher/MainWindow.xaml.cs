@@ -22,8 +22,8 @@ public partial class MainWindow : Window
     private const string FabricVersion = "0.19.3";
     private static readonly string LauncherVersion = App.AppVersion;
     private const int MaximumRamMb = 4096;
-    private const int PcHeartbeatSeconds = 30;
-    private const int LeaseHeartbeatSeconds = 30;
+    private const int PcHeartbeatSeconds = 5;
+    private const int LeaseHeartbeatSeconds = 5;
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
@@ -75,7 +75,7 @@ public partial class MainWindow : Window
         using var response = await _http.SendAsync(request);
         var json = await response.Content.ReadAsStringAsync();
         if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_deviceToken)) return true;
-        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && json.Contains("geblokkeerd", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Deze pc is door een beheerder geblokkeerd.");
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden) throw new DeviceBlockedException();
         if (response.StatusCode != System.Net.HttpStatusCode.NotFound && response.StatusCode != System.Net.HttpStatusCode.Unauthorized && response.StatusCode != System.Net.HttpStatusCode.Forbidden) throw new InvalidOperationException(GetError(json));
         AuthorizationPanel.Visibility = Visibility.Visible;
         AuthorizationCodeBox.Focus();
@@ -213,16 +213,61 @@ public partial class MainWindow : Window
         request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, osVersion = Environment.OSVersion.VersionString, launcherVersion = LauncherVersion }), Encoding.UTF8, "application/json");
         using var response = await _http.SendAsync(request, cancellationToken);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && IsBlockedResponse(json))
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden || IsBlockedResponse(json))
             throw new DeviceBlockedException();
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
     }
 
     private static bool IsBlockedResponse(string json)
-        => json.Contains("geblokkeerd", StringComparison.OrdinalIgnoreCase)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return false;
+
+        if (json.Contains("geblokkeerd", StringComparison.OrdinalIgnoreCase)
             || json.Contains("blocked", StringComparison.OrdinalIgnoreCase)
             || json.Contains("device_blocked", StringComparison.OrdinalIgnoreCase)
-            || json.Contains("deviceBlocked", StringComparison.OrdinalIgnoreCase);
+            || json.Contains("deviceBlocked", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return ContainsBlockedValue(document.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsBlockedValue(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name.Equals("blocked", StringComparison.OrdinalIgnoreCase)
+                    || property.Name.Equals("deviceBlocked", StringComparison.OrdinalIgnoreCase)
+                    || property.Name.Equals("device_blocked", StringComparison.OrdinalIgnoreCase)
+                    || property.Name.Equals("isBlocked", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (property.Value.ValueKind == JsonValueKind.True)
+                        return true;
+                    if (property.Value.ValueKind == JsonValueKind.String
+                        && property.Value.GetString()?.Equals("true", StringComparison.OrdinalIgnoreCase) == true)
+                        return true;
+                }
+
+                if (ContainsBlockedValue(property.Value)) return true;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+                if (ContainsBlockedValue(item)) return true;
+        }
+
+        return false;
+    }
 
     private async Task HandleDeviceBlockedAsync()
     {
