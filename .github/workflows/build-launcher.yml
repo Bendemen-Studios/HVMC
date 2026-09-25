@@ -79,7 +79,9 @@ jobs:
           elseif ($current -eq $latestVersion) {
             $latestReleaseTag = "v$latestVersion"
             & gh release view $latestReleaseTag --repo $env:GITHUB_REPOSITORY *> $null
-            if ($LASTEXITCODE -ne 0) {
+            $releaseCheckExitCode = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
+            if ($releaseCheckExitCode -ne 0) {
               $target = $current
               Write-Host "Release $latestReleaseTag ontbreekt; bestaande versie $target wordt hersteld."
             }
