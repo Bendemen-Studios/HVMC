@@ -2,6 +2,15 @@ param([switch]$ForceRedownload)
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell 5.1 does not always load System.Net.Http before the
+# parallel downloader creates HttpClient. Load the assembly explicitly so
+# the updater works on normal Windows installations as well as newer PowerShell.
+try {
+    Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+} catch {
+    throw "System.Net.Http kon niet worden geladen: $($_.Exception.Message)"
+}
+
 $Repo = 'Bendemen-Studios/HVMC'
 $Branch = 'main'
 $MinecraftDir = Join-Path $env:APPDATA '.minecraft'
