@@ -55,8 +55,8 @@ public partial class MainWindow : Window
             SetStatus("HVMC School Launcher voorbereiden...");
 
             // Check for a newer launcher before starting the normal authorization flow.
-            // If an update is found, ScheduleSelfReplacement() closes this process and
-            // starts the downloaded launcher, so the user always gets the newest updater.
+            // If an update is accepted, the launcher downloads the new executable,
+            // silently replaces itself after this process exits, and starts the new version.
             await CheckForLauncherUpdateAsync();
             if (!await EnsurePcAuthorizedAsync()) return;
             await SendPcHeartbeatAsync();
@@ -338,7 +338,7 @@ public partial class MainWindow : Window
             || remoteVersion <= currentVersion)
             return false;
 
-        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
+        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC School Launcher.exe", StringComparison.OrdinalIgnoreCase));
         if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
 
         if (IsLauncherUpdateDeferred(remoteVersion))
@@ -356,8 +356,8 @@ public partial class MainWindow : Window
             return false;
         }
 
-        SetStatus($"HVMC {tag} downloaden...");
-        var temp = Path.Combine(_root, $"HVMCInstaller-update-{Guid.NewGuid():N}.exe");
+        SetStatus($"HVMC {tag} wordt op de achtergrond gedownload...");
+        var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
         try
         {
             using (var dl = await _http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead))
@@ -368,14 +368,15 @@ public partial class MainWindow : Window
                 await source.CopyToAsync(target);
             }
 
-            if (asset.Size > 0 && new FileInfo(temp).Length != asset.Size)
-                throw new InvalidOperationException("De gedownloade HVMC-installer heeft een onjuiste bestandsgrootte.");
+            var downloaded = new FileInfo(temp);
+            if (asset.Size > 0 && downloaded.Length != asset.Size)
+                throw new InvalidOperationException("De gedownloade HVMC-launcher heeft een onjuiste bestandsgrootte.");
 
-            if (new FileInfo(temp).Length < 1_000_000)
-                throw new InvalidOperationException("De gedownloade HVMC-installer lijkt ongeldig of te klein.");
+            if (downloaded.Length < 1_000_000)
+                throw new InvalidOperationException("De gedownloade HVMC-launcher lijkt ongeldig of te klein.");
 
-            SetStatus($"HVMC {tag} installeren...");
-            ScheduleInstallerLaunch(temp);
+            SetStatus($"HVMC {tag} is gedownload. Launcher wordt stil bijgewerkt...");
+            ScheduleSilentLauncherReplacement(temp, currentExe);
             return true;
         }
         catch
@@ -527,16 +528,23 @@ public partial class MainWindow : Window
         return await SHA256.HashDataAsync(stream);
     }
 
-    private static void ScheduleInstallerLaunch(string installerPath)
+    private static void ScheduleSilentLauncherReplacement(string downloadedExe, string currentExe)
     {
         var pid = Environment.ProcessId;
 
         static string Ps(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
         var script =
-            $"$pid={pid};$installer={Ps(installerPath)};" +
+            $"$pid={pid};$source={Ps(downloadedExe)};$target={Ps(currentExe)};" +
             "Start-Sleep -Milliseconds 800;" +
             $"while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};" +
-            $"Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS';";
+            "$replaced=$false;" +
+            "for($attempt=1;$attempt -le 30 -and -not $replaced;$attempt++){" +
+            "try{" +
+            "Move-Item -LiteralPath $source -Destination $target -Force -ErrorAction Stop;" +
+            "$replaced=$true;" +
+            "}catch{Start-Sleep -Milliseconds 500}}" +
+            "if(-not $replaced){try{Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue}catch{};exit 1};" +
+            $"Start-Process -FilePath $target;";
 
         Process.Start(new ProcessStartInfo
         {
