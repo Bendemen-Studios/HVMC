@@ -213,7 +213,40 @@ public partial class MainWindow : Window
         request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, osVersion = Environment.OSVersion.VersionString, launcherVersion = LauncherVersion }), Encoding.UTF8, "application/json");
         using var response = await _http.SendAsync(request, cancellationToken);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && IsBlockedResponse(json))
+            throw new DeviceBlockedException();
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
+    }
+
+    private static bool IsBlockedResponse(string json)
+        => json.Contains("geblokkeerd", StringComparison.OrdinalIgnoreCase)
+            || json.Contains("blocked", StringComparison.OrdinalIgnoreCase)
+            || json.Contains("device_blocked", StringComparison.OrdinalIgnoreCase)
+            || json.Contains("deviceBlocked", StringComparison.OrdinalIgnoreCase);
+
+    private async Task HandleDeviceBlockedAsync()
+    {
+        if (_deviceBlocked) return;
+        _deviceBlocked = true;
+        _leaseHeartbeatCts?.Cancel();
+        _pcHeartbeatCts?.Cancel();
+
+        try
+        {
+            var process = _minecraftProcess;
+            if (process is not null && !process.HasExited)
+            {
+                try { process.Kill(entireProcessTree: true); }
+                catch { try { process.Kill(); } catch { } }
+                try { await process.WaitForExitAsync(); } catch { }
+            }
+        }
+        catch { }
+        finally
+        {
+            _minecraftProcess = null;
+            await Dispatcher.InvokeAsync(Close);
+        }
     }
 
     private async Task<bool> CheckForLauncherUpdateAsync()
@@ -396,6 +429,11 @@ public partial class MainWindow : Window
                     await SendLeaseHeartbeatAsync(clientId, deviceToken, leaseId, token);
                 }
                 catch (OperationCanceledException) { break; }
+                catch (DeviceBlockedException)
+                {
+                    await HandleDeviceBlockedAsync();
+                    break;
+                }
                 catch { }
             }
         }, token);
