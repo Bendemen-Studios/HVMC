@@ -130,7 +130,10 @@ jobs:
           # contains the exact version we calculated, so the non-fast-forward
           # push is harmless and must not fail the build.
           git fetch origin main
-          if (git push origin HEAD:main) {
+          git push origin HEAD:main
+          $pushExitCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($pushExitCode -eq 0) {
             Write-Host "Automatische versiecommit naar main gepusht."
           }
           else {
