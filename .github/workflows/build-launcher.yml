@@ -174,13 +174,35 @@ jobs:
       - name: Verify launcher artifact
         shell: pwsh
         run: |
-          $exe = "artifacts/HVMCLauncher/HVMC.exe"
-          if (-not (Test-Path -LiteralPath $exe)) { throw "HVMCLauncher.exe ontbreekt na publish." }
+          $exe = "artifacts/HVMCLauncher/HVMC School Launcher.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "HVMC School Launcher.exe ontbreekt na publish." }
           $item = Get-Item -LiteralPath $exe
-          if ($item.Length -lt 1MB) { throw "HVMCLauncher.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
+          if ($item.Length -lt 1MB) { throw "HVMC School Launcher.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
           $pe = [IO.File]::ReadAllBytes($exe)
-          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMCLauncher.exe heeft geen geldige MZ/PE-header." }
+          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMC School Launcher.exe heeft geen geldige MZ/PE-header." }
           Write-Host "Launcher artifact OK: $($item.Length) bytes"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build HVMC installer
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_VERSION)) {
+            $env:RELEASE_VERSION = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+          }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\HVMC.iss" "/DAppVersion=$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "HVMC installer bouwen mislukt." }
+          $installer = "artifacts/HVMC/HVMC.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "HVMC.exe installer ontbreekt na build." }
+          $item = Get-Item -LiteralPath $installer
+          if ($item.Length -lt 1MB) { throw "HVMC.exe installer lijkt ongeldig of te klein ($($item.Length) bytes)." }
+          $pe = [IO.File]::ReadAllBytes($installer)
+          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMC.exe installer heeft geen geldige MZ/PE-header." }
+          Write-Host "HVMC installer OK: $($item.Length) bytes"
 
       - name: Create release tag from version
         if: github.ref == 'refs/heads/main'
@@ -212,6 +234,6 @@ jobs:
           name: HVMC Release v${{ env.RELEASE_VERSION }}
           generate_release_notes: true
           prerelease: false
-          files: artifacts/HVMCLauncher/HVMC.exe
+          files: artifacts/HVMC/HVMC.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
