@@ -142,10 +142,19 @@ jobs:
             $localVersion = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
             $remoteVersion = (git show 'origin/main:version.txt').Trim()
 
-            if ($localVersion -eq $remoteVersion) {
-              Write-Host "Een andere release-run heeft versie $remoteVersion al naar main gepusht. Deze run gaat verder met dezelfde release."
+            $localParts = $localVersion.Split('.')
+            $remoteParts = $remoteVersion.Split('.')
+            $localMajor = [int]$localParts[0]
+            $localMinor = [int]$localParts[1]
+            $remoteMajor = [int]$remoteParts[0]
+            $remoteMinor = [int]$remoteParts[1]
+
+            if ($remoteMajor -eq $localMajor -and $remoteMinor -ge $localMinor) {
+              Write-Host "Een andere release-run heeft versie $remoteVersion al naar main gepusht. Deze run gaat verder met remote versie $remoteVersion."
               git reset --hard origin/main
-              Set-Content -LiteralPath 'version.txt' -Value $localVersion -NoNewline
+              Set-Content -LiteralPath 'version.txt' -Value $remoteVersion -NoNewline
+              $target = $remoteVersion
+              "RELEASE_VERSION=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
             else {
               throw "Automatische versiecommit kon niet worden gepusht: remote version.txt=$remoteVersion, lokale version.txt=$localVersion."
