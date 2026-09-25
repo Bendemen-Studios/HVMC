@@ -332,7 +332,7 @@ public partial class MainWindow : Window
         var newHash = await Sha256Async(temp);
         if (CryptographicOperations.FixedTimeEquals(currentHash, newHash)) { File.Delete(temp); return false; }
         SetStatus($"HVMC School Launcher {tag} installeren...");
-        ScheduleSelfReplacement(currentExe, temp);
+        ScheduleInstallerLaunch(temp);
         return true;
     }
 
@@ -342,15 +342,17 @@ public partial class MainWindow : Window
         return await SHA256.HashDataAsync(stream);
     }
 
-    private static void ScheduleSelfReplacement(string currentExe, string updateExe)
+    private static void ScheduleInstallerLaunch(string installerPath)
     {
         var pid = Environment.ProcessId;
-        var currentDirectory = Path.GetDirectoryName(currentExe)
-            ?? throw new InvalidOperationException("De launcherlocatie kon niet worden bepaald.");
-        var destinationExe = Path.Combine(currentDirectory, "HVMC.exe");
 
         static string Ps(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
-        var script = $"$pid={pid};$src={Ps(updateExe)};$dst={Ps(destinationExe)};$old={Ps(currentExe)};Start-Sleep -Milliseconds 800;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};Move-Item -LiteralPath $src -Destination $dst -Force;if($old -ne $dst -and (Test-Path -LiteralPath $old)){{Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue}};Start-Process -FilePath $dst";
+        var script =
+            $"$pid={pid};$installer={Ps(installerPath)};" +
+            "Start-Sleep -Milliseconds 800;" +
+            $"while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};" +
+            $"Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS';";
+
         Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
@@ -358,6 +360,7 @@ public partial class MainWindow : Window
             UseShellExecute = false,
             CreateNoWindow = true
         });
+
         Environment.Exit(0);
     }
 
