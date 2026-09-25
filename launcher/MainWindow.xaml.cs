@@ -831,6 +831,23 @@ public partial class MainWindow : Window
     {
         var message = GetFriendlyError(ex);
 
+        if (_contentUpdateFailed)
+        {
+            var retry = MessageBox.Show(
+                this,
+                "HVMC kon de benodigde bestanden niet bijwerken.\n\nWil je het opnieuw proberen?",
+                title,
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Error);
+
+            if (retry == MessageBoxResult.Yes)
+            {
+                _ = RetryContentDownloadAsync();
+            }
+
+            return;
+        }
+
         MessageBox.Show(
             this,
             message,
