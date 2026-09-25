@@ -46,6 +46,7 @@ jobs:
           REQUESTED_VERSION: ${{ github.event.inputs.release_version || '' }}
           APPROVE_MAJOR: ${{ github.event.inputs.approve_major || 'false' }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $current = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
           if ($current -notmatch '^\d+\.\d+$') {
