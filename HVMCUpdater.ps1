@@ -50,76 +50,23 @@ function Download([string]$Url,[string]$Destination) {
 }
 function DownloadBatch($Files,[int]$BatchSize=6) {
     if($Files.Count -eq 0){ return }
-    [System.Net.ServicePointManager]::DefaultConnectionLimit=8
-    $client=New-Object System.Net.Http.HttpClient
-    $client.DefaultRequestHeaders.UserAgent.ParseAdd('HVMC-School-Launcher')
-    try {
-        for($start=0; $start -lt $Files.Count; $start += $BatchSize){
-            $end=[Math]::Min($start+$BatchSize-1,$Files.Count-1)
-            $batch=@()
-            for($i=$start; $i -le $end; $i++){ $batch += $Files[$i] }
-            Log "Parallel downloaden: $($batch.Count) bestanden tegelijk."
 
-            $responseTasks=@()
-            foreach($file in $batch){
-                $responseTasks += $client.GetAsync([string]$file.download,[System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
-            }
-            # Wait for every request individually instead of Task.WaitAll().
-            # Windows PowerShell 5.1 wraps multiple async failures in a generic
-            # AggregateException ("Exception calling WaitAll"). GetResult() exposes
-            # the actual HTTP/network error so the updater can report which file failed.
-            for($i=0; $i -lt $responseTasks.Count; $i++){
-                try {
-                    $null = $responseTasks[$i].GetAwaiter().GetResult()
-                } catch {
-                    $filePath = [string]$batch[$i].path
-                    $baseError = $_.Exception.GetBaseException().Message
-                    throw "Download failed for ${filePath}: $baseError"
-                }
-            }
-
-            $copyTasks=@()
-            $handles=@()
-            try {
-                for($i=0; $i -lt $batch.Count; $i++){
-                    $response=$responseTasks[$i].Result
-                    if(-not $response.IsSuccessStatusCode){ throw "Download failed for $($batch[$i].path): HTTP $([int]$response.StatusCode) $($response.StatusCode)" }
-                    $destination=[string]$batch[$i].destination
-                    $tmp="$destination.download"
-                    $parent=Split-Path -Parent $destination
-                    New-Item -ItemType Directory -Force -Path $parent | Out-Null
-                    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-                    $stream=[IO.File]::Create($tmp)
-                    $handles += [pscustomobject]@{Stream=$stream;Temp=$tmp;Destination=$destination;Path=[string]$batch[$i].relative}
-                    $copyTasks += $response.Content.CopyToAsync($stream)
-                }
-                # As above, avoid WaitAll() so Windows PowerShell does not hide
-                # the real CopyToAsync failure behind a generic AggregateException.
-                for($i=0; $i -lt $copyTasks.Count; $i++){
-                    try {
-                        $null = $copyTasks[$i].GetAwaiter().GetResult()
-                    } catch {
-                        $filePath = [string]$handles[$i].Path
-                        $baseError = $_.Exception.GetBaseException().Message
-                        throw "Download failed while writing ${filePath}: $baseError"
-                    }
-                }
-                foreach($handle in $handles){
-                    $handle.Stream.Dispose()
-                    Move-Item -LiteralPath $handle.Temp -Destination $handle.Destination -Force
-                    Log "Updated: $($handle.Path)"
-                }
-            } finally {
-                foreach($handle in $handles){
-                    try { $handle.Stream.Dispose() } catch {}
-                    if(Test-Path -LiteralPath $handle.Temp){ Remove-Item -LiteralPath $handle.Temp -Force -ErrorAction SilentlyContinue }
-                }
-                foreach($task in $responseTasks){
-                    try { if($task.IsCompleted){ $task.Result.Dispose() } } catch {}
-                }
-            }
+    # GitHub raw downloads can occasionally cancel HttpClient tasks on Windows
+    # PowerShell 5.1 (especially when several raw.githubusercontent.com requests
+    # are opened at once). Use the proven Invoke-WebRequest downloader here.
+    # It has its own retry logic and, most importantly, gives us a deterministic
+    # per-file failure instead of a generic TaskCanceledException.
+    Log "Downloads worden betrouwbaar uitgevoerd; parallelle netwerkrequests zijn uitgeschakeld."
+    foreach($file in @($Files)){
+        try {
+            Log "Downloaden: $([string]$file.relative)"
+            Download ([string]$file.download) ([string]$file.destination)
+            Log "Updated: $([string]$file.relative)"
+        } catch {
+            $baseError = $_.Exception.GetBaseException().Message
+            throw "Download failed for $([string]$file.relative): $baseError"
         }
-    } finally { $client.Dispose() }
+    }
 }
 function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
     if (-not (Test-Path -LiteralPath $FilePath)) { return $false }
