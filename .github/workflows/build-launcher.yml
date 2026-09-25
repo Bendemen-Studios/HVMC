@@ -6,16 +6,16 @@ on:
     tags: ['v*.*']
   workflow_dispatch:
     inputs:
-      major_release:
-        description: 'Approve a major release such as 4.0'
-        required: false
-        default: false
-        type: boolean
       release_version:
-        description: 'Major release version, for example 4.0 (leave empty for automatic minor release)'
+        description: 'Optional approved release version, for example 4.0'
         required: false
         default: ''
         type: string
+      approve_major:
+        description: 'Required when moving to a new major version such as 4.0'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -43,8 +43,8 @@ jobs:
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
-          MAJOR_RELEASE: ${{ github.event.inputs.major_release || 'false' }}
-          RELEASE_VERSION: ${{ github.event.inputs.release_version || '' }}
+          REQUESTED_VERSION: ${{ github.event.inputs.release_version || '' }}
+          APPROVE_MAJOR: ${{ github.event.inputs.approve_major || 'false' }}
         run: |
           $current = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
           if ($current -notmatch '^\d+\.\d+$') {
@@ -53,53 +53,49 @@ jobs:
 
           git fetch --tags --force
           $latestTag = git tag --list 'v*.*' --sort=-v:refname | Select-Object -First 1
+          $latestVersion = if ($latestTag) { $latestTag -replace '^v','' } else { '0.0' }
 
-          if ($env:MAJOR_RELEASE -eq 'true') {
-            if ([string]::IsNullOrWhiteSpace($env:RELEASE_VERSION) -or $env:RELEASE_VERSION -notmatch '^\d+\.0$') {
-              throw 'Een goedgekeurde major release moet bijvoorbeeld 4.0 zijn.'
+          if (-not [string]::IsNullOrWhiteSpace($env:REQUESTED_VERSION)) {
+            if ($env:REQUESTED_VERSION -notmatch '^\d+\.\d+$') {
+              throw 'release_version moet bijvoorbeeld 3.7 of 4.0 zijn.'
             }
 
-            $target = $env:RELEASE_VERSION
+            $target = $env:REQUESTED_VERSION
             $targetMajor = [int]($target.Split('.')[0])
-            $currentMajor = [int]($current.Split('.')[0])
+            $latestMajor = [int]($latestVersion.Split('.')[0])
 
-            if ($targetMajor -le $currentMajor) {
-              throw "Major release $target is niet hoger dan de huidige major versie $current."
+            if ($targetMajor -gt $latestMajor -and $env:APPROVE_MAJOR -ne 'true') {
+              throw "Major release $target vereist expliciete goedkeuring via approve_major=true."
+            }
+
+            if ($targetMajor -eq $latestMajor -and [int]($target.Split('.')[1]) -le [int]($latestVersion.Split('.')[1])) {
+              throw "Release $target is niet hoger dan de huidige release $latestVersion."
             }
 
             Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
-            Write-Host "Goedgekeurde major release ingesteld op $target."
+            Write-Host "Goedgekeurde release ingesteld op $target."
           }
           else {
-            if ($current -ne ($latestTag -replace '^v','') -and -not [string]::IsNullOrWhiteSpace($latestTag)) {
-              $currentMajor = [int]($current.Split('.')[0])
-              $latestMajor = [int](($latestTag -replace '^v','').Split('.')[0])
-              if ($currentMajor -gt $latestMajor) {
-                throw "Major versie $current is gedetecteerd. Deze wijziging vereist expliciete toestemming via workflow_dispatch met major_release=true en release_version=$current."
-              }
-            }
-
-            $major = [int]($current.Split('.')[0])
-            $minor = [int]($current.Split('.')[1]) + 1
+            $major = [int]($latestVersion.Split('.')[0])
+            $minor = [int]($latestVersion.Split('.')[1]) + 1
             $target = "$major.$minor"
-
-            if (-not [string]::IsNullOrWhiteSpace($latestTag) -and $target -eq ($latestTag -replace '^v','')) {
-              $minor++
-              $target = "$major.$minor"
-            }
 
             Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
             Write-Host "Automatische minor release: $target"
           }
 
       - name: Commit automatic version bump
-        if: github.ref == 'refs/heads/main' && github.event.inputs.major_release != 'true'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add version.txt
-          git diff --cached --quiet || git commit -m "Auto-bump launcher minor version [no-release]"
+          if (git diff --cached --quiet) {
+            Write-Host "Geen automatische versiecommit nodig."
+            exit 0
+          }
+          git commit -m "Auto-bump launcher minor version [no-release]"
           git push origin HEAD:main
 
       - name: Prepare launcher icon
@@ -149,6 +145,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a $tag -m "HVMC Release $tag"
           git push origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tag $tag kon niet naar GitHub worden gepusht."
+          }
           Write-Host "Release tag $tag aangemaakt."
 
       - name: Create GitHub release from tag
