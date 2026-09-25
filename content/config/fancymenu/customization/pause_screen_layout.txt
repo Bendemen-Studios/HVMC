@@ -343,7 +343,7 @@ layout_action_executable_blocks {
 
 element {
   button_element_executable_block_identifier = 057d4f3c-b7cd-41c3-9524-53ab39e2b4c8-1776424754910
-  [executable_action_instance:abcaeca0-f18d-4f57-a65c-b9d678dd02a3-1776425046847][action_type:disconnect_server_or_world] = home
+  [executable_action_instance:abcaeca0-f18d-4f57-a65c-b9d678dd02a3-1776425046847][action_type:disconnect_server_or_world] = title_screen
   [executable_block:057d4f3c-b7cd-41c3-9524-53ab39e2b4c8-1776424754910][type:generic] = [executables:abcaeca0-f18d-4f57-a65c-b9d678dd02a3-1776425046847;]
   underline_label_on_hover = false
   transparent_background = false
