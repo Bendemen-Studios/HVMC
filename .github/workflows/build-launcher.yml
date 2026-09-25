@@ -77,11 +77,19 @@ jobs:
             Write-Host "Goedgekeurde release ingesteld op $target."
           }
           elseif ($current -eq $latestVersion) {
-            $major = [int]($latestVersion.Split('.')[0])
-            $minor = [int]($latestVersion.Split('.')[1]) + 1
-            $target = "$major.$minor"
-            Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
-            Write-Host "Automatische minor release: $target"
+            $latestReleaseTag = "v$latestVersion"
+            & gh release view $latestReleaseTag --repo $env:GITHUB_REPOSITORY *> $null
+            if ($LASTEXITCODE -ne 0) {
+              $target = $current
+              Write-Host "Release $latestReleaseTag ontbreekt; bestaande versie $target wordt hersteld."
+            }
+            else {
+              $major = [int]($latestVersion.Split('.')[0])
+              $minor = [int]($latestVersion.Split('.')[1]) + 1
+              $target = "$major.$minor"
+              Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
+              Write-Host "Automatische minor release: $target"
+            }
           }
           else {
             $currentMajor = [int]($current.Split('.')[0])
@@ -98,6 +106,8 @@ jobs:
             $target = $current
             Write-Host "Vooraf ingestelde releaseversie gebruiken: $target"
           }
+
+          "RELEASE_VERSION=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Commit automatic version bump
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -166,11 +176,11 @@ jobs:
           Write-Host "Release tag $tag aangemaakt."
 
       - name: Create GitHub release from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: HVMC Release ${{ github.ref_name }}
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: HVMC Release v${{ env.RELEASE_VERSION }}
           generate_release_notes: true
           prerelease: false
           files: artifacts/HVMCLauncher/HVMCLauncher.exe
