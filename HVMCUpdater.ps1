@@ -64,7 +64,19 @@ function DownloadBatch($Files,[int]$BatchSize=6) {
             foreach($file in $batch){
                 $responseTasks += $client.GetAsync([string]$file.download,[System.Net.Http.HttpCompletionOption]::ResponseHeadersRead)
             }
-            [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$responseTasks)
+            # Wait for every request individually instead of Task.WaitAll().
+            # Windows PowerShell 5.1 wraps multiple async failures in a generic
+            # AggregateException ("Exception calling WaitAll"). GetResult() exposes
+            # the actual HTTP/network error so the updater can report which file failed.
+            for($i=0; $i -lt $responseTasks.Count; $i++){
+                try {
+                    $null = $responseTasks[$i].GetAwaiter().GetResult()
+                } catch {
+                    $filePath = [string]$batch[$i].path
+                    $baseError = $_.Exception.GetBaseException().Message
+                    throw "Download failed for ${filePath}: $baseError"
+                }
+            }
 
             $copyTasks=@()
             $handles=@()
@@ -81,7 +93,17 @@ function DownloadBatch($Files,[int]$BatchSize=6) {
                     $handles += [pscustomobject]@{Stream=$stream;Temp=$tmp;Destination=$destination;Path=[string]$batch[$i].relative}
                     $copyTasks += $response.Content.CopyToAsync($stream)
                 }
-                [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$copyTasks)
+                # As above, avoid WaitAll() so Windows PowerShell does not hide
+                # the real CopyToAsync failure behind a generic AggregateException.
+                for($i=0; $i -lt $copyTasks.Count; $i++){
+                    try {
+                        $null = $copyTasks[$i].GetAwaiter().GetResult()
+                    } catch {
+                        $filePath = [string]$handles[$i].Path
+                        $baseError = $_.Exception.GetBaseException().Message
+                        throw "Download failed while writing ${filePath}: $baseError"
+                    }
+                }
                 foreach($handle in $handles){
                     $handle.Stream.Dispose()
                     Move-Item -LiteralPath $handle.Temp -Destination $handle.Destination -Force
