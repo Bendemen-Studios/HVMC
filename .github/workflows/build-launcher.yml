@@ -234,6 +234,8 @@ jobs:
           name: HVMC Release v${{ env.RELEASE_VERSION }}
           generate_release_notes: true
           prerelease: false
-          files: artifacts/HVMC/HVMC.exe
+          files: |
+            artifacts/HVMC/HVMC.exe
+            artifacts/HVMCLauncher/HVMC School Launcher.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
