@@ -174,7 +174,7 @@ jobs:
       - name: Verify launcher artifact
         shell: pwsh
         run: |
-          $exe = "artifacts/HVMCLauncher/HVMC School Launcher.exe"
+          $exe = "artifacts/HVMCLauncher/HVMC.exe"
           if (-not (Test-Path -LiteralPath $exe)) { throw "HVMCLauncher.exe ontbreekt na publish." }
           $item = Get-Item -LiteralPath $exe
           if ($item.Length -lt 1MB) { throw "HVMCLauncher.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
@@ -212,6 +212,6 @@ jobs:
           name: HVMC Release v${{ env.RELEASE_VERSION }}
           generate_release_notes: true
           prerelease: false
-          files: artifacts/HVMCLauncher/HVMC School Launcher.exe
+          files: artifacts/HVMCLauncher/HVMC.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
