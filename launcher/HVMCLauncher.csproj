@@ -11,8 +11,8 @@
     <HVMCVersion>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\..\version.txt').Trim())</HVMCVersion>
     <Version>$(HVMCVersion)</Version>
     <AssemblyName>HVMC</AssemblyName>
-    <AssemblyTitle>HVMC</AssemblyTitle>
-    <Product>HVMC</Product>
+    <AssemblyTitle>HVMC School Launcher</AssemblyTitle>
+    <Product>HVMC School Launcher</Product>
     <Description>Hero's Vault School Launcher</Description>
     <Company>Bendemen Studios</Company>
     <AssemblyVersion>$(HVMCVersion)</AssemblyVersion>
