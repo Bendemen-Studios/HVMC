@@ -219,7 +219,7 @@ public partial class App : System.Windows.Application
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
+            using var request = new HttpRequestMessage(HttpMethod.Get, ReleasesApi);
             request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
 
