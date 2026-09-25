@@ -45,6 +45,7 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ github.event.inputs.release_version || '' }}
           APPROVE_MAJOR: ${{ github.event.inputs.approve_major || 'false' }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
           $current = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
           if ($current -notmatch '^\d+\.\d+$') {
@@ -75,13 +76,27 @@ jobs:
             Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
             Write-Host "Goedgekeurde release ingesteld op $target."
           }
-          else {
+          elseif ($current -eq $latestVersion) {
             $major = [int]($latestVersion.Split('.')[0])
             $minor = [int]($latestVersion.Split('.')[1]) + 1
             $target = "$major.$minor"
-
             Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
             Write-Host "Automatische minor release: $target"
+          }
+          else {
+            $currentMajor = [int]($current.Split('.')[0])
+            $latestMajor = [int]($latestVersion.Split('.')[0])
+
+            if ($currentMajor -lt $latestMajor) {
+              throw "version.txt ($current) loopt achter op de laatste release ($latestVersion)."
+            }
+
+            if ($currentMajor -gt $latestMajor -and $env:APPROVE_MAJOR -ne 'true' -and $env:COMMIT_MESSAGE -notmatch '\[approve-major\]') {
+              throw "Major release $current vereist expliciete toestemming. Gebruik [approve-major] in de commit of approve_major=true via workflow_dispatch."
+            }
+
+            $target = $current
+            Write-Host "Vooraf ingestelde releaseversie gebruiken: $target"
           }
 
       - name: Commit automatic version bump
