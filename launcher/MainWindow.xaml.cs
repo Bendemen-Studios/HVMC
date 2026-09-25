@@ -293,7 +293,16 @@ public partial class MainWindow : Window
         finally
         {
             _minecraftProcess = null;
-            await Dispatcher.InvokeAsync(Close);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                MessageBox.Show(
+                    this,
+                    "Je bent geblokkeerd, Neem contact op met info@bendemen.nl voor meer informatie.",
+                    "HVMC",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                Close();
+            });
         }
     }
 
@@ -820,106 +829,16 @@ public partial class MainWindow : Window
 
     private void ShowError(string title, Exception ex)
     {
-        var dialog = new Window
-        {
-            Title = title,
-            Owner = this,
-            Width = 760,
-            Height = 520,
-            MinWidth = 520,
-            MinHeight = 360,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ResizeMode = ResizeMode.CanResize,
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 244, 236))
-        };
+        var message = GetFriendlyError(ex);
 
-        var grid = new Grid { Margin = new Thickness(22) };
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        var heading = new TextBlock
-        {
-            Text = title,
-            FontSize = 20,
-            FontWeight = FontWeights.Bold,
-            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30)),
-            Margin = new Thickness(0, 0, 0, 12)
-        };
-        Grid.SetRow(heading, 0);
-        grid.Children.Add(heading);
-
-        var detailsBorder = new System.Windows.Controls.Border
-        {
-            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(214, 205, 185)),
-            BorderThickness = new Thickness(1),
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 253, 248)),
-            Padding = new Thickness(12)
-        };
-
-        var details = new System.Windows.Controls.TextBlock
-        {
-            Text = GetFriendlyError(ex),
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 15,
-            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30))
-        };
-
-        var scrollViewer = new System.Windows.Controls.ScrollViewer
-        {
-            Content = details,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            CanContentScroll = true,
-            MaxHeight = 360
-        };
-
-        detailsBorder.Child = scrollViewer;
-        Grid.SetRow(detailsBorder, 1);
-        grid.Children.Add(detailsBorder);
-
-        var close = new System.Windows.Controls.Button
-        {
-            Content = "OK",
-            Width = 110,
-            Height = 40,
-            Margin = new Thickness(0, 14, 0, 0),
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-            IsDefault = true
-        };
-        var buttonPanel = new StackPanel
-        {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
-            // WPF orientation is fully qualified to avoid the Windows Forms name collision.
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
-        };
-
-        if (_contentUpdateFailed)
-        {
-            var retry = new System.Windows.Controls.Button
-            {
-                Content = "OPNIEUW DOWNLOADEN",
-                Width = 190,
-                Height = 40,
-                Margin = new Thickness(0, 14, 10, 0),
-                FontWeight = FontWeights.SemiBold
-            };
-            retry.Click += async (_, _) =>
-            {
-                dialog.Close();
-                await RetryContentDownloadAsync();
-            };
-            buttonPanel.Children.Add(retry);
-        }
-
-        close.Click += (_, _) => dialog.Close();
-        buttonPanel.Children.Add(close);
-        Grid.SetRow(buttonPanel, 2);
-        grid.Children.Add(buttonPanel);
-
-        dialog.Content = grid;
-        dialog.ShowDialog();
+        MessageBox.Show(
+            this,
+            message,
+            title,
+            MessageBoxButton.OK,
+            MessageBoxImage.Error);
     }
+
     private sealed class DeviceBlockedException : Exception { }
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
