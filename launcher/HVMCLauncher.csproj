@@ -29,7 +29,6 @@
     <PackageReference Include="CmlLib.Core" Version="4.0.6" />
     <PackageReference Include="CmlLib.Core.Auth.Microsoft" Version="3.3.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
     <None Include="hvmc.ico.b64" CopyToOutputDirectory="Never" />
     <EmbeddedResource Include="..\HVMCUpdater.ps1" Link="HVMCUpdater.ps1" />
   </ItemGroup>
