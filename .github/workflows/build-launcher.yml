@@ -63,7 +63,7 @@ jobs:
         run: |
           $version = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
           if ([string]::IsNullOrWhiteSpace($version)) { throw 'version.txt is leeg.' }
-          if ($version -notmatch '^\d+\.\d+(\.\d+)?$') { throw "Ongeldige launcher versie: $version" }
+          if ($version -notmatch '^\d+\.\d+$') { throw "Ongeldige launcher versie: $version. Gebruik bijvoorbeeld 3.7 of 3.8." }
           $tag = "v$version"
           git fetch --tags --force
           $existing = git ls-remote --tags origin "refs/tags/$tag"
