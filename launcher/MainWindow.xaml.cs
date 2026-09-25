@@ -51,6 +51,11 @@ public partial class MainWindow : Window
             _clientId = GetStableClientId();
             _deviceToken = GetDeviceToken();
             SetStatus("HVMC School Launcher voorbereiden...");
+
+            // Check for a newer launcher before starting the normal authorization flow.
+            // If an update is found, ScheduleSelfReplacement() closes this process and
+            // starts the downloaded launcher, so the user always gets the newest updater.
+            await CheckForLauncherUpdateAsync();
             if (!await EnsurePcAuthorizedAsync()) return;
             await SendPcHeartbeatAsync();
             StartPcHeartbeat();
