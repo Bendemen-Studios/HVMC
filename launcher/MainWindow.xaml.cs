@@ -268,7 +268,7 @@ public partial class MainWindow : Window
             SetStatus($"Launcher controleren: huidig {currentVersion}, beschikbaar {remoteVersion}...");
             if (remoteVersion <= currentVersion) return false;
         }
-        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC School Launcher.exe", StringComparison.OrdinalIgnoreCase));
+        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
         if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
         SetStatus($"Nieuwe launcher {tag} gevonden. Downloaden...");
         var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
