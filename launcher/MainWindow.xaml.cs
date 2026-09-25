@@ -301,39 +301,206 @@ public partial class MainWindow : Window
     {
         var currentExe = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe)) return false;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
         request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
+
         using var response = await _http.SendAsync(request);
         if (!response.IsSuccessStatusCode) return false;
+
         var json = await response.Content.ReadAsStringAsync();
         var release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
         var tag = release?.TagName?.Trim();
         if (string.IsNullOrWhiteSpace(tag)) return false;
+
         var remoteText = tag.TrimStart('v', 'V');
-        if (Version.TryParse(remoteText, out var remoteVersion) && Version.TryParse(LauncherVersion, out var currentVersion))
-        {
-            SetStatus($"Launcher controleren: huidig {currentVersion}, beschikbaar {remoteVersion}...");
-            if (remoteVersion <= currentVersion) return false;
-        }
+        if (!Version.TryParse(remoteText, out var remoteVersion)
+            || !Version.TryParse(LauncherVersion, out var currentVersion)
+            || remoteVersion <= currentVersion)
+            return false;
+
         var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
         if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
-        SetStatus($"Nieuwe launcher {tag} gevonden. Downloaden...");
-        var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
-        using (var dl = await _http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead))
+
+        if (IsLauncherUpdateDeferred(remoteVersion))
         {
-            dl.EnsureSuccessStatusCode();
-            await using var source = await dl.Content.ReadAsStreamAsync();
-            await using var target = File.Create(temp);
-            await source.CopyToAsync(target);
+            SetStatus($"Update {tag} is uitgesteld. Je kunt deze later handmatig installeren.");
+            return false;
         }
-        if (asset.Size > 0 && new FileInfo(temp).Length != asset.Size) { File.Delete(temp); throw new InvalidOperationException("De gedownloade launcher heeft een onjuiste bestandsgrootte."); }
-        var currentHash = await Sha256Async(currentExe);
-        var newHash = await Sha256Async(temp);
-        if (CryptographicOperations.FixedTimeEquals(currentHash, newHash)) { File.Delete(temp); return false; }
-        SetStatus($"HVMC School Launcher {tag} installeren...");
-        ScheduleInstallerLaunch(temp);
-        return true;
+
+        SetStatus($"Nieuwe HVMC-update {tag} beschikbaar.");
+        var choice = ShowLauncherUpdatePrompt(currentVersion, remoteVersion);
+        if (choice != LauncherUpdateChoice.Update)
+        {
+            SaveLauncherUpdateDeferred(remoteVersion);
+            SetStatus($"Update {tag} uitgesteld voor 24 uur.");
+            return false;
+        }
+
+        SetStatus($"HVMC {tag} downloaden...");
+        var temp = Path.Combine(_root, $"HVMCInstaller-update-{Guid.NewGuid():N}.exe");
+        try
+        {
+            using (var dl = await _http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            {
+                dl.EnsureSuccessStatusCode();
+                await using var source = await dl.Content.ReadAsStreamAsync();
+                await using var target = File.Create(temp);
+                await source.CopyToAsync(target);
+            }
+
+            if (asset.Size > 0 && new FileInfo(temp).Length != asset.Size)
+                throw new InvalidOperationException("De gedownloade HVMC-installer heeft een onjuiste bestandsgrootte.");
+
+            if (new FileInfo(temp).Length < 1_000_000)
+                throw new InvalidOperationException("De gedownloade HVMC-installer lijkt ongeldig of te klein.");
+
+            SetStatus($"HVMC {tag} installeren...");
+            ScheduleInstallerLaunch(temp);
+            return true;
+        }
+        catch
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+            throw;
+        }
+    }
+
+    private enum LauncherUpdateChoice
+    {
+        Update,
+        Later
+    }
+
+    private LauncherUpdateChoice ShowLauncherUpdatePrompt(Version currentVersion, Version latestVersion)
+    {
+        var dialog = new Window
+        {
+            Title = "HVMC School Launcher update",
+            Owner = this,
+            Width = 470,
+            Height = 285,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 244, 236)),
+            ShowInTaskbar = true
+        };
+
+        var grid = new Grid { Margin = new Thickness(26) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = "Nieuwe update beschikbaar",
+            FontSize = 22,
+            FontWeight = FontWeights.Bold,
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30))
+        };
+        Grid.SetRow(title, 0);
+        grid.Children.Add(title);
+
+        var message = new TextBlock
+        {
+            Text = $"Er is een nieuwe versie van HVMC School Launcher beschikbaar.\\n\\nHuidige versie: {currentVersion}\\nNieuwe versie: {latestVersion}\\n\\nWil je de laatste release nu downloaden en installeren?",
+            FontSize = 15,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(74, 70, 61)),
+            Margin = new Thickness(0, 18, 0, 12)
+        };
+        Grid.SetRow(message, 1);
+        grid.Children.Add(message);
+
+        var buttons = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+
+        var later = new System.Windows.Controls.Button
+        {
+            Content = "Later (24 uur)",
+            Width = 125,
+            Height = 42,
+            Margin = new Thickness(0, 0, 10, 0),
+            FontSize = 14
+        };
+
+        var update = new System.Windows.Controls.Button
+        {
+            Content = "UPDATE",
+            Width = 125,
+            Height = 42,
+            FontSize = 14,
+            FontWeight = FontWeights.Bold,
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(215, 166, 47)),
+            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(184, 135, 31))
+        };
+
+        var result = LauncherUpdateChoice.Later;
+        later.Click += (_, _) =>
+        {
+            result = LauncherUpdateChoice.Later;
+            dialog.Close();
+        };
+        update.Click += (_, _) =>
+        {
+            result = LauncherUpdateChoice.Update;
+            dialog.Close();
+        };
+
+        buttons.Children.Add(later);
+        buttons.Children.Add(update);
+        Grid.SetRow(buttons, 2);
+        grid.Children.Add(buttons);
+
+        dialog.Content = grid;
+        dialog.ShowDialog();
+        return result;
+    }
+
+    private bool IsLauncherUpdateDeferred(Version latestVersion)
+    {
+        var path = Path.Combine(_root, "launcher-update-deferred.txt");
+        try
+        {
+            if (!File.Exists(path)) return false;
+
+            var lines = File.ReadAllLines(path);
+            if (lines.Length < 2) return false;
+            if (!Version.TryParse(lines[0].Trim(), out var deferredVersion)) return false;
+            if (!DateTimeOffset.TryParse(lines[1].Trim(), out var deferredAt)) return false;
+
+            if (DateTimeOffset.UtcNow - deferredAt >= TimeSpan.FromHours(24))
+            {
+                File.Delete(path);
+                return false;
+            }
+
+            // If a newer release appears during the 24-hour deferral, show it immediately.
+            return deferredVersion == latestVersion;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void SaveLauncherUpdateDeferred(Version latestVersion)
+    {
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.WriteAllLines(
+                Path.Combine(_root, "launcher-update-deferred.txt"),
+                new[] { latestVersion.ToString(3), DateTimeOffset.UtcNow.ToString("O") });
+        }
+        catch
+        {
+            // A failed preference write should never prevent the launcher from starting.
+        }
     }
 
     private static async Task<byte[]> Sha256Async(string path)
