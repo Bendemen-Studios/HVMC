@@ -338,7 +338,7 @@ public partial class MainWindow : Window
             || remoteVersion <= currentVersion)
             return false;
 
-        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC School Launcher.exe", StringComparison.OrdinalIgnoreCase));
+        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
         if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
 
         if (IsLauncherUpdateDeferred(remoteVersion))
