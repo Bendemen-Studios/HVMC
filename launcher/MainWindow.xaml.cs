@@ -33,6 +33,8 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _leaseHeartbeatCts;
     private CancellationTokenSource? _pcHeartbeatCts;
     private bool _contentUpdateFailed;
+    private bool _deviceBlocked;
+    private Process? _minecraftProcess;
 
     public MainWindow()
     {
@@ -148,13 +150,19 @@ public partial class MainWindow : Window
                 ScreenWidth = width,
                 ScreenHeight = height
             });
+            _minecraftProcess = process;
             process.Start();
             SetStatus("Minecraft draait.");
             await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
             StartLeaseHeartbeat(_clientId, _deviceToken, _leaseId);
             await process.WaitForExitAsync();
+            _minecraftProcess = null;
         }
-        catch (Exception ex) { SetStatus("Starten mislukt."); ShowError("Starten mislukt", ex); }
+        catch (DeviceBlockedException)
+        {
+            await HandleDeviceBlockedAsync();
+        }
+        catch (Exception ex) { if (!_deviceBlocked) { SetStatus("Starten mislukt."); ShowError("Starten mislukt", ex); } }
         finally
         {
             _leaseHeartbeatCts?.Cancel();
@@ -183,6 +191,11 @@ public partial class MainWindow : Window
                     await SendPcHeartbeatAsync(token);
                 }
                 catch (OperationCanceledException) { break; }
+                catch (DeviceBlockedException)
+                {
+                    await HandleDeviceBlockedAsync();
+                    break;
+                }
                 catch
                 {
                     try { Dispatcher.Invoke(() => SetStatus("Verbinding met HVMC-server tijdelijk verloren; opnieuw proberen...")); } catch { }
@@ -362,6 +375,8 @@ public partial class MainWindow : Window
         request.Content = new StringContent(JsonSerializer.Serialize(new { clientId, leaseId }), Encoding.UTF8, "application/json");
         using var response = await _http.SendAsync(request, cancellationToken);
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && IsBlockedResponse(json))
+            throw new DeviceBlockedException();
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(GetError(json));
     }
 
@@ -612,6 +627,8 @@ public partial class MainWindow : Window
         dialog.Content = grid;
         dialog.ShowDialog();
     }
+    private sealed class DeviceBlockedException : Exception { }
+
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private sealed record PcRegistrationResponse(string DeviceToken);
     private sealed record LeaseResponse(string LeaseId, string Username, string MinecraftAccessToken, string Uuid, string? Xuid, string AccountName);
