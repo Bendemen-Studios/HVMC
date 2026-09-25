@@ -191,6 +191,26 @@ jobs:
           if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMC.exe heeft geen geldige MZ/PE-header." }
           Write-Host "Launcher artifact OK: $($item.Length) bytes"
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build first-install setup
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_VERSION)) {
+            $env:RELEASE_VERSION = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+          }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\HVMC.iss" "/DAppVersion=$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "HVMC first-install setup bouwen mislukt." }
+          $installer = "artifacts/HVMC/HVMC-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "HVMC-Setup.exe ontbreekt na build." }
+          $item = Get-Item -LiteralPath $installer
+          if ($item.Length -lt 1MB) { throw "HVMC-Setup.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
+          $pe = [IO.File]::ReadAllBytes($installer)
+          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMC-Setup.exe heeft geen geldige MZ/PE-header." }
       - name: Create release tag from version
         if: github.ref == 'refs/heads/main'
         shell: pwsh
@@ -223,5 +243,6 @@ jobs:
           prerelease: false
           files: |
             artifacts/HVMCLauncher/HVMC.exe
+            artifacts/HVMC/HVMC-Setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
