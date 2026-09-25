@@ -124,7 +124,30 @@ jobs:
             exit 0
           }
           git commit -m "Auto-bump launcher minor version [no-release]"
-          git push origin HEAD:main
+
+          # Another release workflow can finish the same minor bump while this
+          # run is still preparing its commit. In that case the remote already
+          # contains the exact version we calculated, so the non-fast-forward
+          # push is harmless and must not fail the build.
+          git fetch origin main
+          if (git push origin HEAD:main) {
+            Write-Host "Automatische versiecommit naar main gepusht."
+          }
+          else {
+            Write-Host "Versiecommit kon niet direct worden gepusht; remote main opnieuw controleren..."
+            git fetch origin main
+            $localVersion = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+            $remoteVersion = (git show 'origin/main:version.txt').Trim()
+
+            if ($localVersion -eq $remoteVersion) {
+              Write-Host "Een andere release-run heeft versie $remoteVersion al naar main gepusht. Deze run gaat verder met dezelfde release."
+              git reset --hard origin/main
+              Set-Content -LiteralPath 'version.txt' -Value $localVersion -NoNewline
+            }
+            else {
+              throw "Automatische versiecommit kon niet worden gepusht: remote version.txt=$remoteVersion, lokale version.txt=$localVersion."
+            }
+          }
 
       - name: Prepare launcher icon
         shell: pwsh
