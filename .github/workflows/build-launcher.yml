@@ -63,17 +63,7 @@ jobs:
         run: |
           $version = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
           if ([string]::IsNullOrWhiteSpace($version)) { throw 'version.txt is leeg.' }
-          if ($version -notmatch '^\\d+\\.\\d+(\\.\\d+)?        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: HVMC Release ${{ github.ref_name }}
-          generate_release_notes: true
-          prerelease: false
-          files: artifacts/HVMCLauncher/HVMCLauncher.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-) { throw "Ongeldige launcher versie: $version" }
+          if ($version -notmatch '^\d+\.\d+(\.\d+)?$') { throw "Ongeldige launcher versie: $version" }
           $tag = "v$version"
           git fetch --tags --force
           $existing = git ls-remote --tags origin "refs/tags/$tag"
