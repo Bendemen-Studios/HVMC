@@ -165,11 +165,14 @@ public partial class MainWindow : Window
         catch (Exception ex) { if (!_deviceBlocked) { SetStatus("Starten mislukt."); ShowError("Starten mislukt", ex); } }
         finally
         {
+            // Minecraft has returned to the launcher (normally or after a crash).
+            // Release the leased account before restoring the Play button so the
+            // next launch cannot inherit a stale "busy" account.
             _leaseHeartbeatCts?.Cancel();
             await ReleaseLeaseSafeAsync();
             PlayButton.IsEnabled = true;
             ExitButton.IsEnabled = true;
-            if (AuthorizationPanel.Visibility != Visibility.Visible) SetStatus("Klaar om te spelen.");
+            if (AuthorizationPanel.Visibility != Visibility.Visible && !_deviceBlocked) SetStatus("Klaar om te spelen.");
         }
     }
 
@@ -497,18 +500,45 @@ public partial class MainWindow : Window
     private async Task ReleaseLeaseSafeAsync()
     {
         if (string.IsNullOrWhiteSpace(_leaseId) || string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_deviceToken)) return;
+
         var leaseId = _leaseId;
+        var clientId = _clientId;
+        var deviceToken = _deviceToken;
+
+        // Clear the local lease immediately so multiple cleanup paths cannot
+        // accidentally release the same lease more than once.
         _leaseId = null;
-        try
+        _leaseHeartbeatCts?.Cancel();
+
+        for (var attempt = 1; attempt <= 3; attempt++)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/release");
-            request.Headers.Add("x-hvmc-client-id", _clientId);
-            request.Headers.Add("x-hvmc-device-token", _deviceToken);
-            request.Content = new StringContent(JsonSerializer.Serialize(new { clientId = _clientId, leaseId }), Encoding.UTF8, "application/json");
-            using var response = await _http.SendAsync(request);
-            if (!response.IsSuccessStatusCode) _ = await response.Content.ReadAsStringAsync();
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/lease/release");
+                request.Headers.Add("x-hvmc-client-id", clientId);
+                request.Headers.Add("x-hvmc-device-token", deviceToken);
+                request.Content = new StringContent(
+                    JsonSerializer.Serialize(new { clientId, leaseId }),
+                    Encoding.UTF8,
+                    "application/json");
+
+                using var response = await _http.SendAsync(request);
+                if (response.IsSuccessStatusCode)
+                    return;
+
+                var body = await response.Content.ReadAsStringAsync();
+                if (attempt == 3)
+                    SetStatus($"Account vrijgeven mislukt (HTTP {(int)response.StatusCode}).");
+            }
+            catch
+            {
+                if (attempt == 3)
+                    SetStatus("Account kon niet automatisch worden vrijgegeven.");
+            }
+
+            if (attempt < 3)
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
         }
-        catch { }
     }
 
     private string GetStableClientId()
