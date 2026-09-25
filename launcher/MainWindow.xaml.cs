@@ -343,7 +343,7 @@ public partial class MainWindow : Window
 
         if (IsLauncherUpdateDeferred(remoteVersion))
         {
-            SetStatus($"Update {tag} is uitgesteld. Je kunt deze later handmatig installeren.");
+            SetStatus($"Update {tag} is uitgesteld voor 24 uur.");
             return false;
         }
 
@@ -423,7 +423,7 @@ public partial class MainWindow : Window
 
         var message = new TextBlock
         {
-            Text = $"Er is een nieuwe versie van HVMC School Launcher beschikbaar.\\n\\nHuidige versie: {currentVersion}\\nNieuwe versie: {latestVersion}\\n\\nWil je de laatste release nu downloaden en installeren?",
+            Text = $"Er is een nieuwe versie van HVMC School Launcher beschikbaar.\\n\\nHuidige versie: {currentVersion}\\nNieuwe versie: {latestVersion}\\n\\nWil je de laatste release nu op de achtergrond downloaden en bijwerken?",
             FontSize = 15,
             TextWrapping = TextWrapping.Wrap,
             Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(74, 70, 61)),
