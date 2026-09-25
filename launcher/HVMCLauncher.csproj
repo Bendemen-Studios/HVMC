@@ -10,7 +10,7 @@
     <ApplicationIcon>hvmc.ico</ApplicationIcon>
     <HVMCVersion>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\..\version.txt').Trim())</HVMCVersion>
     <Version>$(HVMCVersion)</Version>
-    <AssemblyName>HVMC</AssemblyName>
+    <AssemblyName>HVMC School Launcher</AssemblyName>
     <AssemblyTitle>HVMC School Launcher</AssemblyTitle>
     <Product>HVMC School Launcher</Product>
     <Description>Hero's Vault School Launcher</Description>
