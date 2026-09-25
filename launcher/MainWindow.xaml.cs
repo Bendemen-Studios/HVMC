@@ -297,9 +297,19 @@ public partial class MainWindow : Window
     private static void ScheduleSelfReplacement(string currentExe, string updateExe)
     {
         var pid = Environment.ProcessId;
+        var currentDirectory = Path.GetDirectoryName(currentExe)
+            ?? throw new InvalidOperationException("De launcherlocatie kon niet worden bepaald.");
+        var destinationExe = Path.Combine(currentDirectory, "HVMC.exe");
+
         static string Ps(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
-        var script = $"$pid={pid};$src={Ps(updateExe)};$dst={Ps(currentExe)};Start-Sleep -Milliseconds 800;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};Move-Item -LiteralPath $src -Destination $dst -Force;Start-Process -FilePath $dst";
-        Process.Start(new ProcessStartInfo { FileName = "powershell.exe", Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"", UseShellExecute = false, CreateNoWindow = true });
+        var script = $"$pid={pid};$src={Ps(updateExe)};$dst={Ps(destinationExe)};$old={Ps(currentExe)};Start-Sleep -Milliseconds 800;while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};Move-Item -LiteralPath $src -Destination $dst -Force;if($old -ne $dst -and (Test-Path -LiteralPath $old)){{Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue}};Start-Process -FilePath $dst";
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
         Environment.Exit(0);
     }
 
