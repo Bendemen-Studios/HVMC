@@ -5,6 +5,17 @@ on:
     branches: [main]
     tags: ['v*.*']
   workflow_dispatch:
+    inputs:
+      major_release:
+        description: 'Approve a major release such as 4.0'
+        required: false
+        default: false
+        type: boolean
+      release_version:
+        description: 'Major release version, for example 4.0 (leave empty for automatic minor release)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +26,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref != 'refs/heads/main' || !contains(github.event.head_commit.message, '[no-release]')
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -26,6 +38,69 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
+      - name: Prepare release version
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          MAJOR_RELEASE: ${{ github.event.inputs.major_release || 'false' }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_version || '' }}
+        run: |
+          $current = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+          if ($current -notmatch '^\d+\.\d+$') {
+            throw "Ongeldige launcher versie in version.txt: $current. Gebruik bijvoorbeeld 3.7."
+          }
+
+          git fetch --tags --force
+          $latestTag = git tag --list 'v*.*' --sort=-v:refname | Select-Object -First 1
+
+          if ($env:MAJOR_RELEASE -eq 'true') {
+            if ([string]::IsNullOrWhiteSpace($env:RELEASE_VERSION) -or $env:RELEASE_VERSION -notmatch '^\d+\.0$') {
+              throw 'Een goedgekeurde major release moet bijvoorbeeld 4.0 zijn.'
+            }
+
+            $target = $env:RELEASE_VERSION
+            $targetMajor = [int]($target.Split('.')[0])
+            $currentMajor = [int]($current.Split('.')[0])
+
+            if ($targetMajor -le $currentMajor) {
+              throw "Major release $target is niet hoger dan de huidige major versie $current."
+            }
+
+            Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
+            Write-Host "Goedgekeurde major release ingesteld op $target."
+          }
+          else {
+            if ($current -ne ($latestTag -replace '^v','') -and -not [string]::IsNullOrWhiteSpace($latestTag)) {
+              $currentMajor = [int]($current.Split('.')[0])
+              $latestMajor = [int](($latestTag -replace '^v','').Split('.')[0])
+              if ($currentMajor -gt $latestMajor) {
+                throw "Major versie $current is gedetecteerd. Deze wijziging vereist expliciete toestemming via workflow_dispatch met major_release=true en release_version=$current."
+              }
+            }
+
+            $major = [int]($current.Split('.')[0])
+            $minor = [int]($current.Split('.')[1]) + 1
+            $target = "$major.$minor"
+
+            if (-not [string]::IsNullOrWhiteSpace($latestTag) -and $target -eq ($latestTag -replace '^v','')) {
+              $minor++
+              $target = "$major.$minor"
+            }
+
+            Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
+            Write-Host "Automatische minor release: $target"
+          }
+
+      - name: Commit automatic version bump
+        if: github.ref == 'refs/heads/main' && github.event.inputs.major_release != 'true'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.txt
+          git diff --cached --quiet || git commit -m "Auto-bump launcher minor version [no-release]"
+          git push origin HEAD:main
 
       - name: Prepare launcher icon
         shell: pwsh
@@ -62,8 +137,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
-          if ([string]::IsNullOrWhiteSpace($version)) { throw 'version.txt is leeg.' }
-          if ($version -notmatch '^\d+\.\d+$') { throw "Ongeldige launcher versie: $version. Gebruik bijvoorbeeld 3.7 of 3.8." }
+          if ($version -notmatch '^\d+\.\d+$') { throw "Ongeldige launcher versie: $version" }
           $tag = "v$version"
           git fetch --tags --force
           $existing = git ls-remote --tags origin "refs/tags/$tag"
