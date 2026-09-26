@@ -27,7 +27,7 @@ const MICROSOFT_CLIENT_ID = String(process.env.MICROSOFT_CLIENT_ID || '');
 const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '');
 const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'bendemen');
 const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || '');
-const DEFAULT_LEASE_SECONDS = Number(process.env.LEASE_SECONDS || 3600);
+const DEFAULT_LEASE_SECONDS = Math.min(Math.max(Number(process.env.LEASE_SECONDS || 30), 15), 60);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/consumers';
 const MS_SCOPE = 'openid profile offline_access XboxLive.signin';
 const POOL_ENCRYPTION_KEY_B64 = String(process.env.POOL_ENCRYPTION_KEY || '');
@@ -149,7 +149,7 @@ function cleanupState() {
   for (const [id, attempt] of linkAttempts) if (attempt.expiresAt <= now) linkAttempts.delete(id);
   cleanupExpired();
 }
-setInterval(cleanupState, 60_000).unref();
+setInterval(cleanupState, 5_000).unref();
 
 function safeEqual(a, b) {
   const aa = Buffer.from(String(a));
