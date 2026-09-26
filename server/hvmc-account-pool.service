@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/hvmc-account-pool
+WorkingDirectory=/opt/hvmc-account-pool/server
 EnvironmentFile=/opt/hvmc-account-pool/.env
-ExecStart=/usr/bin/node /opt/hvmc-account-pool/app/server.js
+ExecStart=/usr/bin/node /opt/hvmc-account-pool/server/server.js
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
