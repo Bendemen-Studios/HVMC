@@ -123,6 +123,17 @@ if (!initialized) {
 
 const sessions = new Map();
 const loginAttempts = new Map();
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  role TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_expiry ON admin_sessions(expires_at);
+`);
 const emailAuthCodes = new Map();
 const emailAuthChallenges = new Map();
 const emailAuthSendState = new Map();
@@ -142,6 +153,7 @@ function cleanupExpired() {
 function cleanupState() {
   const now = Date.now();
   for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
+  db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(new Date(now).toISOString());
   for (const [ip, info] of loginAttempts) if (info.resetAt <= now) loginAttempts.delete(ip);
   for (const [challengeId, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(challengeId);
   for (const [challengeId, info] of emailAuthChallenges) if (info.expiresAt <= now) emailAuthChallenges.delete(challengeId);
@@ -178,8 +190,17 @@ function isAdmin(req) {
   const legacy = String(req.headers['x-admin-token'] || '');
   if (ADMIN_TOKEN && safeEqual(legacy, ADMIN_TOKEN)) return true;
   const token = getSessionToken(req);
-  const session = sessions.get(token);
-  if (!session || session.expiresAt <= Date.now()) return false;
+  if (!token) return false;
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const session = sessions.get(token) || db.prepare('SELECT username,role,expires_at AS expiresAt FROM admin_sessions WHERE token_hash=?').get(tokenHash);
+  if (!session) return false;
+  const expiresAt = typeof session.expiresAt === 'number' ? session.expiresAt : Date.parse(session.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    sessions.delete(token);
+    db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(tokenHash);
+    return false;
+  }
+  sessions.set(token, { username: session.username, role: session.role, expiresAt });
   return session.role === 'admin';
 }
 function requireAdmin(req, res) {
@@ -192,7 +213,10 @@ function requireAdmin(req, res) {
 function createAdminSession(res) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + SESSION_TTL_MS;
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   sessions.set(token, { role: 'admin', username: ADMIN_USERNAME, expiresAt });
+  db.prepare('INSERT OR REPLACE INTO admin_sessions (token_hash,username,role,expires_at,created_at) VALUES (?,?,?,?,?)')
+    .run(tokenHash, ADMIN_USERNAME, 'admin', new Date(expiresAt).toISOString(), new Date().toISOString());
   res.json({ ok: true, token, expiresAt: new Date(expiresAt).toISOString() });
 }
 function normalizeEmail(value) {
@@ -389,7 +413,15 @@ app.post('/v1/admin/email/verify', (req, res) => {
   createAdminSession(res);
 });
 
-app.post('/v1/admin/logout', (req, res) => { const token = getSessionToken(req); if (token) sessions.delete(token); res.json({ ok: true }); });
+app.post('/v1/admin/logout', (req, res) => {
+  const token = getSessionToken(req);
+  if (token) {
+    sessions.delete(token);
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(tokenHash);
+  }
+  res.json({ ok: true });
+});
 app.get('/v1/admin/me', (req, res) => { if (!requireAdmin(req, res)) return; res.json({ authenticated: true, username: ADMIN_USERNAME }); });
 
 app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
