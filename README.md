@@ -8,7 +8,7 @@ HVMC is the school Minecraft launcher and account-pool client.
 - Executable: **HVMC.exe**
 - Minecraft: 26.2
 - Fabric Loader: 0.19.3
-- Launcher version: 3.14
+- Launcher version: 3.61
 - Windows x64, self-contained single-file executable
 
 The launcher keeps the existing PC authorization, heartbeat, account leasing, Minecraft/Fabric startup, fullscreen and self-update functionality.
