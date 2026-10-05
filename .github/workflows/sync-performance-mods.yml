@@ -92,14 +92,14 @@ for root, _, names in os.walk("content"):
             continue
         with open(path, "rb") as handle:
             data = handle.read()
-        header = f"blob {len(data)}\\0".encode()
+        header = f"blob {len(data)}\0".encode()
         files.append({"path": path, "sha": hashlib.sha1(header + data).hexdigest()})
 
 files.sort(key=lambda item: item["path"])
 tree_sha = __import__("subprocess").check_output(["git", "rev-parse", "HEAD:content"], text=True).strip()
-with open("content-index.json", "w", encoding="utf-8", newline="\\n") as handle:
+with open("content-index.json", "w", encoding="utf-8", newline="\n") as handle:
     json.dump({"version": "generated", "treeSha": tree_sha, "files": files}, handle, indent=2)
-    handle.write("\\n")
+    handle.write("\n")
 PY
               git add content-index.json
               if git diff --cached --quiet; then
