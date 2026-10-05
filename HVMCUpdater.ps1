@@ -14,6 +14,7 @@ try {
 $Repo = 'Bendemen-Studios/HVMC'
 $Branch = 'main'
 $MinecraftDir = Join-Path $env:APPDATA '.minecraft'
+$ModsDir = Join-Path $MinecraftDir 'mods'
 $Root = Join-Path $env:LOCALAPPDATA 'Bendemen\HVMC'
 $ManifestPath = Join-Path $Root 'content-manifest.json'
 $StatePath = Join-Path $Root 'state.json'
