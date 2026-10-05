@@ -31,7 +31,10 @@
             <Button x:Name="ExitButton" Content="AFSLUITEN" Height="62" FontSize="18" FontWeight="SemiBold" Foreground="#4B463D" Background="#FFFFFF" BorderBrush="#C9B98F" BorderThickness="1" Click="ExitButton_Click" />
         </StackPanel>
 
-        <TextBlock Grid.Row="3" Text="Bendemen Studios" FontSize="12" Foreground="#9A907D" HorizontalAlignment="Center" Margin="0,25,0,0" />
+        <StackPanel Grid.Row="3" HorizontalAlignment="Center" Margin="0,25,0,0">
+            <TextBlock Text="Bendemen Studios" FontSize="12" Foreground="#9A907D" HorizontalAlignment="Center" />
+            <TextBlock x:Name="VersionText" Text="Versie: v0.0" FontSize="11" Foreground="#AAA18F" HorizontalAlignment="Center" Margin="0,4,0,0" />
+        </StackPanel>
 
         <!-- Full-window loading overlay used while checking/updating HVMC. -->
         <Border x:Name="LoadingOverlay"
