@@ -62,7 +62,11 @@ function DownloadBatch($Files,[int]$BatchSize=6) {
         try {
             Log "Downloaden: $([string]$file.relative)"
             Download ([string]$file.download) ([string]$file.destination)
-            Log "Updated: $([string]$file.relative)"
+            if (-not (Test-GitBlobSha ([string]$file.destination) ([string]$file.sha))) {
+                Remove-Item -LiteralPath ([string]$file.destination) -Force -ErrorAction SilentlyContinue
+                throw "Gedownload bestand komt niet overeen met de Git SHA: $([string]$file.relative)"
+            }
+            Log "Updated + SHA gecontroleerd: $([string]$file.relative)"
         } catch {
             $baseError = $_.Exception.GetBaseException().Message
             throw "Download failed for $([string]$file.relative): $baseError"
