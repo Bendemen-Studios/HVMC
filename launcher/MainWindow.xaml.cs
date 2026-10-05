@@ -86,7 +86,6 @@ public partial class MainWindow : Window
     }
 
     private const string PoolApi = "https://accounts.hvmc.nl";
-    private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "26.2";
     private const string FabricVersion = "0.19.3";
     private static readonly string LauncherVersion = App.AppVersion;
@@ -189,7 +188,7 @@ public partial class MainWindow : Window
             if (ShouldCheckLauncherUpdate())
             {
                 await Task.Delay(TimeSpan.FromSeconds(5));
-                if (!ShouldCheckLauncherUpdate())
+                if (_playInProgress || !ShouldCheckLauncherUpdate())
                     return;
 
                 var updated = await CheckForLauncherUpdateAsync();
@@ -807,6 +806,13 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException("De gedownloade HVMC-launcher lijkt ongeldig of te klein.");
 
             SetStatus($"HVMC {tag} is gedownload. Launcher wordt stil bijgewerkt...");
+            if (_playInProgress)
+            {
+                try { File.Delete(temp); } catch { }
+                WriteLauncherLog("Launcher-update overgeslagen omdat Minecraft al wordt gestart.");
+                return false;
+            }
+
             ScheduleSilentLauncherReplacement(temp, currentExe);
             return true;
         }
@@ -816,158 +822,6 @@ public partial class MainWindow : Window
             WriteLauncherLog($"Launcher-update van {tag} mislukt: {ex.Message}");
             throw new InvalidOperationException($"De nieuwe HVMC-launcher kon niet worden gedownload: {ex.Message}", ex);
         }
-    }
-
-    private static bool HasLauncherAsset(GitHubRelease? release)
-        => release?.Assets?.Any(x =>
-            string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(x.BrowserDownloadUrl)) == true;
-
-    private static Version ParseReleaseVersion(string? tag)
-        => Version.TryParse(tag?.Trim().TrimStart('v', 'V'), out var version)
-            ? version
-            : new Version(0, 0);
-
-    private enum LauncherUpdateChoice
-    {
-        Update,
-        Later
-    }
-
-    private LauncherUpdateChoice ShowLauncherUpdatePrompt(Version currentVersion, Version latestVersion)
-    {
-        var dialog = new Window
-        {
-            Title = "HVMC School Launcher update",
-            Owner = this,
-            Width = 470,
-            Height = 285,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(247, 244, 236)),
-            ShowInTaskbar = true
-        };
-
-        var grid = new Grid { Margin = new Thickness(26) };
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        var title = new TextBlock
-        {
-            Text = "Nieuwe update beschikbaar",
-            FontSize = 22,
-            FontWeight = FontWeights.Bold,
-            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(39, 36, 30))
-        };
-        Grid.SetRow(title, 0);
-        grid.Children.Add(title);
-
-        var message = new TextBlock
-        {
-            Text = $"Er is een nieuwe versie van HVMC School Launcher beschikbaar.\\n\\nHuidige versie: {currentVersion}\\nNieuwe versie: {latestVersion}\\n\\nWil je de laatste release nu op de achtergrond downloaden en bijwerken?",
-            FontSize = 15,
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(74, 70, 61)),
-            Margin = new Thickness(0, 18, 0, 12)
-        };
-        Grid.SetRow(message, 1);
-        grid.Children.Add(message);
-
-        var buttons = new StackPanel
-        {
-            Orientation = System.Windows.Controls.Orientation.Horizontal,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
-        };
-
-        var later = new System.Windows.Controls.Button
-        {
-            Content = "Later (24 uur)",
-            Width = 125,
-            Height = 42,
-            Margin = new Thickness(0, 0, 10, 0),
-            FontSize = 14
-        };
-
-        var update = new System.Windows.Controls.Button
-        {
-            Content = "UPDATE",
-            Width = 125,
-            Height = 42,
-            FontSize = 14,
-            FontWeight = FontWeights.Bold,
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(215, 166, 47)),
-            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(184, 135, 31))
-        };
-
-        var result = LauncherUpdateChoice.Later;
-        later.Click += (_, _) =>
-        {
-            result = LauncherUpdateChoice.Later;
-            dialog.Close();
-        };
-        update.Click += (_, _) =>
-        {
-            result = LauncherUpdateChoice.Update;
-            dialog.Close();
-        };
-
-        buttons.Children.Add(later);
-        buttons.Children.Add(update);
-        Grid.SetRow(buttons, 2);
-        grid.Children.Add(buttons);
-
-        dialog.Content = grid;
-        dialog.ShowDialog();
-        return result;
-    }
-
-    private bool IsLauncherUpdateDeferred(Version latestVersion)
-    {
-        var path = Path.Combine(_root, "launcher-update-deferred.txt");
-        try
-        {
-            if (!File.Exists(path)) return false;
-
-            var lines = File.ReadAllLines(path);
-            if (lines.Length < 2) return false;
-            if (!Version.TryParse(lines[0].Trim(), out var deferredVersion)) return false;
-            if (!DateTimeOffset.TryParse(lines[1].Trim(), out var deferredAt)) return false;
-
-            if (DateTimeOffset.UtcNow - deferredAt >= TimeSpan.FromHours(24))
-            {
-                File.Delete(path);
-                return false;
-            }
-
-            // If a newer release appears during the 24-hour deferral, show it immediately.
-            return deferredVersion == latestVersion;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private void SaveLauncherUpdateDeferred(Version latestVersion)
-    {
-        try
-        {
-            Directory.CreateDirectory(_root);
-            File.WriteAllLines(
-                Path.Combine(_root, "launcher-update-deferred.txt"),
-                new[] { latestVersion.ToString(3), DateTimeOffset.UtcNow.ToString("O") });
-        }
-        catch
-        {
-            // A failed preference write should never prevent the launcher from starting.
-        }
-    }
-
-    private static async Task<byte[]> Sha256Async(string path)
-    {
-        await using var stream = File.OpenRead(path);
-        return await SHA256.HashDataAsync(stream);
     }
 
     private static void ScheduleSilentLauncherReplacement(string downloadedExe, string currentExe)
