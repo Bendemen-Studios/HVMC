@@ -18,20 +18,32 @@ public partial class MainWindow : Window
 {
     private sealed class ResilientHttpHandler : DelegatingHandler
     {
+        private readonly string _logPath;
+
+        public ResilientHttpHandler(string logPath)
+        {
+            _logPath = logPath;
+        }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             Exception? lastException = null;
+            var method = request.Method.Method;
+            var url = request.RequestUri?.ToString() ?? "<onbekende URL>";
 
             for (var attempt = 1; attempt <= 4; attempt++)
             {
                 try
                 {
+                    WriteLog($"HTTP download poging {attempt}/4: {method} {url}");
                     var response = await base.SendAsync(request, cancellationToken);
+                    WriteLog($"HTTP response poging {attempt}/4: {(int)response.StatusCode} {response.ReasonPhrase} — {method} {url}");
 
                     if ((int)response.StatusCode >= 500 && attempt < 4)
                     {
+                        WriteLog($"HTTP serverfout {(int)response.StatusCode}; opnieuw proberen over {attempt} sec.");
                         response.Dispose();
                         await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
                         continue;
@@ -42,16 +54,34 @@ public partial class MainWindow : Window
                 catch (HttpRequestException ex) when (attempt < 4)
                 {
                     lastException = ex;
+                    WriteLog($"HTTP exception poging {attempt}/4 — {method} {url}: {ex}");
                     await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
                 }
                 catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested && attempt < 4)
                 {
                     lastException = ex;
+                    WriteLog($"HTTP timeout poging {attempt}/4 — {method} {url}: {ex}");
                     await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
                 }
             }
 
+            WriteLog($"HTTP download definitief mislukt — {method} {url}: {lastException}");
             throw lastException ?? new HttpRequestException("Minecraft-download mislukt.");
+        }
+
+        private void WriteLog(string message)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
+                File.AppendAllText(
+                    _logPath,
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}");
+            }
+            catch
+            {
+                // Logging must never break Minecraft downloading.
+            }
         }
     }
 
@@ -65,6 +95,7 @@ public partial class MainWindow : Window
     private const int LeaseHeartbeatSeconds = 5;
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
+    private readonly string _launcherLogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC", "launcher.log");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
     private readonly HttpClient _minecraftHttp = CreateMinecraftHttpClient();
     private string? _clientId;
@@ -81,6 +112,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Directory.CreateDirectory(_root);
+        WriteLauncherLog("Launcher gestart.");
         Loaded += MainWindow_Loaded;
         Closed += (_, _) =>
         {
@@ -101,11 +133,13 @@ public partial class MainWindow : Window
             _clientId = GetStableClientId();
             _deviceToken = GetDeviceToken();
             SetStatus("HVMC School Launcher voorbereiden...");
+            WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
 
             // Check for a newer launcher before starting the normal authorization flow.
             // If an update is accepted, the launcher downloads the new executable,
             // silently replaces itself after this process exits, and starts the new version.
             SetLoadingText("HVMC launcher controleren...");
+            WriteLauncherLog("Launcher-updatecontrole gestart.");
             await CheckForLauncherUpdateAsync();
             if (!await EnsurePcAuthorizedAsync())
             {
@@ -197,8 +231,11 @@ public partial class MainWindow : Window
             var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
             _contentUpdateFailed = false;
             SetStatus("HVMC content synchroniseren...");
+            WriteLauncherLog("HVMC content-updater starten.");
             await RunUpdaterAsync();
+            WriteLauncherLog("HVMC content-updater voltooid.");
             SetStatus("Minecraft voorbereiden...");
+            WriteLauncherLog("Minecraft-bestanden controleren/downloaden.");
             var minecraftLauncher = new MinecraftLauncher(
                 MinecraftLauncherParameters.CreateDefault(minecraftPath, _minecraftHttp));
             await InstallMinecraftWithRetryAsync(minecraftLauncher);
@@ -273,6 +310,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            WriteLauncherLog($"Fout tijdens Minecraft-start: {ex}");
             if (!_deviceBlocked)
             {
                 SetStatus("Minecraft is gestopt of kon niet starten.");
@@ -361,6 +399,9 @@ public partial class MainWindow : Window
     private async Task InstallMinecraftWithRetryAsync(MinecraftLauncher launcher)
     {
         Exception? lastException = null;
+        var logPath = Path.Combine(_root, "minecraft-download.log");
+
+        WriteMinecraftDownloadLog($"=== Minecraft download/install gestart: {MinecraftVersion} ===");
 
         for (var attempt = 1; attempt <= 3; attempt++)
         {
@@ -373,34 +414,44 @@ public partial class MainWindow : Window
                     ? "Minecraft voorbereiden..."
                     : $"Minecraft-download opnieuw proberen ({attempt}/3)...");
 
+                WriteMinecraftDownloadLog($"InstallAsync poging {attempt}/3 gestart.");
                 await launcher.InstallAsync(MinecraftVersion);
+                WriteMinecraftDownloadLog($"InstallAsync poging {attempt}/3 succesvol afgerond.");
+                WriteLauncherLog("Minecraft-bestanden zijn succesvol gecontroleerd/gedownload.");
                 return;
             }
             catch (Exception ex)
             {
                 lastException = ex;
-                try
-                {
-                    var message = ex.GetBaseException().Message;
-                    File.AppendAllText(
-                        Path.Combine(_root, "minecraft-download.log"),
-                        $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Poging {attempt}/3 mislukt: {message}{Environment.NewLine}");
-                }
-                catch { }
+                WriteMinecraftDownloadLog($"InstallAsync poging {attempt}/3 mislukt.");
+                WriteMinecraftDownloadLog($"Exception: {ex}");
+                WriteMinecraftDownloadLog($"Base exception: {ex.GetBaseException()}");
 
                 if (attempt < 3)
+                {
+                    WriteMinecraftDownloadLog($"Nieuwe volledige installatiepoging over {attempt * 2} seconden.");
                     await Task.Delay(TimeSpan.FromSeconds(attempt * 2));
+                }
             }
         }
 
+        WriteMinecraftDownloadLog("=== Minecraft download/install definitief mislukt ===");
+        WriteLauncherLog($"Minecraft-download definitief mislukt. Zie {logPath}");
+
         throw new InvalidOperationException(
-            "Minecraft kon niet worden gedownload. Controleer je internetverbinding en probeer het opnieuw.",
+            $"Minecraft kon niet worden gedownload. Details staan in: {logPath}",
             lastException);
     }
 
     private static HttpClient CreateMinecraftHttpClient()
     {
-        var handler = new ResilientHttpHandler
+        var logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Bendemen",
+            "HVMC",
+            "minecraft-download.log");
+
+        var handler = new ResilientHttpHandler(logPath)
         {
             InnerHandler = new HttpClientHandler()
         };
@@ -409,6 +460,36 @@ public partial class MainWindow : Window
         {
             Timeout = TimeSpan.FromSeconds(180)
         };
+    }
+
+    private void WriteLauncherLog(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.AppendAllText(
+                _launcherLogPath,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Logging must never break the launcher.
+        }
+    }
+
+    private void WriteMinecraftDownloadLog(string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.AppendAllText(
+                Path.Combine(_root, "minecraft-download.log"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Logging must never break Minecraft downloading.
+        }
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e) => Close();
