@@ -3,6 +3,12 @@ name: Build HVMC Launcher
 on:
   push:
     branches: [main]
+    paths:
+      - 'launcher/**'
+      - 'installer/**'
+      - 'HVMCUpdater.ps1'
+      - 'version.txt'
+      - '.github/workflows/build-launcher.yml'
   workflow_dispatch:
     inputs:
       release_version:
