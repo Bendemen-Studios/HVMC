@@ -34,6 +34,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _pcHeartbeatCts;
     private bool _contentUpdateFailed;
     private bool _deviceBlocked;
+    private bool _playInProgress;
     private Process? _minecraftProcess;
 
     public MainWindow()
@@ -123,10 +124,20 @@ public partial class MainWindow : Window
 
     private async void PlayButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_playInProgress)
+            return;
+
+        _playInProgress = true;
         PlayButton.IsEnabled = false;
         ExitButton.IsEnabled = false;
         try
         {
+            // Never allow a second launch while the previous Minecraft process
+            // is still attached to the launcher. Process.HasExited only reflects
+            // the associated process, so we explicitly close/dispose the handle
+            // before creating a fresh CmlLib process.
+            await EnsurePreviousMinecraftProcessStoppedAsync();
+
             if (!await EnsurePcAuthorizedAsync()) { ExitButton.IsEnabled = true; return; }
             var minecraftPath = new MinecraftPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft"));
             _contentUpdateFailed = false;
@@ -160,11 +171,19 @@ public partial class MainWindow : Window
                 ScreenHeight = height
             });
             _minecraftProcess = process;
+            process.EnableRaisingEvents = true;
             process.Start();
             SetStatus("Minecraft draait.");
             await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
             StartLeaseHeartbeat(_clientId, _deviceToken, _leaseId);
             await process.WaitForExitAsync();
+
+            // WaitForExitAsync only waits for the process represented by this
+            // Process object. CmlLib/Java can leave descendants behind briefly,
+            // so give Windows a short moment to finish the shutdown before the
+            // account is offered to another launch.
+            await WaitForMinecraftShutdownAsync(process);
+            process.Close();
             _minecraftProcess = null;
         }
         catch (DeviceBlockedException)
@@ -175,13 +194,75 @@ public partial class MainWindow : Window
         finally
         {
             // Minecraft has returned to the launcher (normally or after a crash).
-            // Release the leased account before restoring the Play button so the
-            // next launch cannot inherit a stale "busy" account.
+            // Always stop the heartbeat, release the account and dispose the
+            // Process object before allowing another launch.
             _leaseHeartbeatCts?.Cancel();
             await ReleaseLeaseSafeAsync();
+            await EnsurePreviousMinecraftProcessStoppedAsync();
+            _playInProgress = false;
             PlayButton.IsEnabled = true;
             ExitButton.IsEnabled = true;
             if (AuthorizationPanel.Visibility != Visibility.Visible && !_deviceBlocked) SetStatus("Klaar om te spelen.");
+        }
+    }
+
+    private async Task EnsurePreviousMinecraftProcessStoppedAsync()
+    {
+        var process = _minecraftProcess;
+        if (process is null)
+            return;
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                SetStatus("Vorige Minecraft-sessie wordt afgesloten...");
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
+        catch (TimeoutException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch { }
+
+            try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch { }
+        }
+        catch (InvalidOperationException)
+        {
+            // The Process object is no longer associated with a live process.
+        }
+        catch { }
+        finally
+        {
+            try { process.Close(); } catch { }
+            if (ReferenceEquals(_minecraftProcess, process))
+                _minecraftProcess = null;
+        }
+    }
+
+    private static async Task WaitForMinecraftShutdownAsync(Process process)
+    {
+        // HasExited/WaitForExit only tracks the associated process, not its
+        // descendants. Give the Java process tree a small grace period to settle
+        // before the launcher becomes launchable again.
+        for (var i = 0; i < 20; i++)
+        {
+            try
+            {
+                if (process.HasExited)
+                    return;
+            }
+            catch (InvalidOperationException)
+            {
+                return;
+            }
+
+            await Task.Delay(250);
         }
     }
 
