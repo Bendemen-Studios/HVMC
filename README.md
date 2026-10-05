@@ -56,7 +56,7 @@ The organization controls the available accounts and authorized computers, while
 
 The result is a simpler and more manageable Minecraft experience for organizations operating multiple PCs.
 
-### Want to use the software nfor your organisation?
+### Want to use the software for your organisation?
 
 Mail then to info@bendemen.nl
 (The launcher is currently only available in the dutch language)
