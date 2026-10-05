@@ -61,7 +61,12 @@ public partial class MainWindow : Window
             // silently replaces itself after this process exits, and starts the new version.
             SetLoadingText("HVMC launcher controleren...");
             await CheckForLauncherUpdateAsync();
-            if (!await EnsurePcAuthorizedAsync()) return;
+            if (!await EnsurePcAuthorizedAsync())
+            {
+                HideLoading();
+                ExitButton.IsEnabled = true;
+                return;
+            }
             await SendPcHeartbeatAsync();
             StartPcHeartbeat();
             HideLoading();
@@ -199,6 +204,7 @@ public partial class MainWindow : Window
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
+            HideLoading();
             SetStatus("Minecraft draait.");
             await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
             StartLeaseHeartbeat(_clientId, _deviceToken, _leaseId);
@@ -228,6 +234,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            HideLoading();
             // Minecraft has returned to the launcher (normally or after a crash).
             // Always stop the heartbeat, release the account and dispose the
             // Process object before allowing another launch.
