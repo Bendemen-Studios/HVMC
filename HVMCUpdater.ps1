@@ -137,7 +137,7 @@ try {
                 ForEach-Object {
                     [pscustomobject]@{
                         Release = $_
-                        Version = [version](([string]$_.tag_name).Trim().TrimStart('v','V'))
+                        Version = [version](([string]$_.tag_name).Trim().Trim() -replace '^[vV]','')
                     }
                 } |
                 Where-Object { $_.Version -gt $currentVersion } |
