@@ -28,6 +28,8 @@ const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '');
 const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'bendemen');
 const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || '');
 const DEFAULT_LEASE_SECONDS = Math.min(Math.max(Number(process.env.LEASE_SECONDS || 30), 15), 60);
+const LEASE_RECOVERY_LOOKBACK_MS = Math.max(Number(process.env.LEASE_RECOVERY_LOOKBACK_SECONDS || 600), 60) * 1000;
+const LEASE_RECOVERY_SECONDS = Math.min(Math.max(Number(process.env.LEASE_RECOVERY_SECONDS || 180), 60), 600);
 const MS_AUTHORITY = 'https://login.microsoftonline.com/consumers';
 const MS_SCOPE = 'openid profile offline_access XboxLive.signin';
 const POOL_ENCRYPTION_KEY_B64 = String(process.env.POOL_ENCRYPTION_KEY || '');
@@ -168,6 +170,21 @@ const MAX_LOGIN_ATTEMPTS = 10;
 const LAUNCHER_WINDOW_MS = 60 * 1000;
 const MAX_LAUNCHER_ATTEMPTS = 30;
 
+function recoverRecentLeasesAfterRestart() {
+  // A VPS/service restart temporarily stops launcher heartbeats. A normal
+  // lease is intentionally short-lived, so without recovery an account could
+  // become "free" while Minecraft is still running. If the last heartbeat was
+  // recent, keep that lease reserved briefly so the launcher can reconnect.
+  const now = Date.now();
+  const cutoff = new Date(now - LEASE_RECOVERY_LOOKBACK_MS).toISOString();
+  const recoveryExpires = new Date(now + LEASE_RECOVERY_SECONDS * 1000).toISOString();
+
+  db.prepare(`UPDATE leases
+    SET expires_at = ?
+    WHERE heartbeat_at >= ?
+      AND expires_at <= ?`).run(recoveryExpires, cutoff, new Date(now).toISOString());
+}
+
 function cleanupExpired() {
   const now = new Date().toISOString();
   db.prepare('DELETE FROM leases WHERE expires_at <= ?').run(now);
@@ -184,6 +201,9 @@ function cleanupState() {
   db.prepare('DELETE FROM link_attempts WHERE expires_at <= ?').run(new Date(now).toISOString());
   cleanupExpired();
 }
+// Recover leases from clients that were active immediately before a VPS/service restart.
+recoverRecentLeasesAfterRestart();
+cleanupExpired();
 setInterval(cleanupState, 5_000).unref();
 
 function safeEqual(a, b) {
