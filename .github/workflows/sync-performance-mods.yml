@@ -22,7 +22,6 @@ jobs:
 
       - name: Build content index
         shell: python
-        env:
         run: |
           import hashlib
           import json
