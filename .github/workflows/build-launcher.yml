@@ -3,7 +3,6 @@ name: Build HVMC Launcher
 on:
   push:
     branches: [main]
-    tags: ['v*.*']
   workflow_dispatch:
     inputs:
       release_version:
@@ -26,7 +25,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.ref != 'refs/heads/main' || !contains(github.event.head_commit.message, '[no-release]')
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message || '', '[no-release]')
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -125,41 +124,11 @@ jobs:
           }
           git commit -m "Auto-bump launcher minor version [no-release]"
 
-          # Another release workflow can finish the same minor bump while this
-          # run is still preparing its commit. In that case the remote already
-          # contains the exact version we calculated, so the non-fast-forward
-          # push is harmless and must not fail the build.
-          git fetch origin main
           git push origin HEAD:main
-          $pushExitCode = $LASTEXITCODE
-          $global:LASTEXITCODE = 0
-          if ($pushExitCode -eq 0) {
-            Write-Host "Automatische versiecommit naar main gepusht."
+          if ($LASTEXITCODE -ne 0) {
+            throw "Automatische versiecommit kon niet naar main worden gepusht."
           }
-          else {
-            Write-Host "Versiecommit kon niet direct worden gepusht; remote main opnieuw controleren..."
-            git fetch origin main
-            $localVersion = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
-            $remoteVersion = (git show 'origin/main:version.txt').Trim()
-
-            $localParts = $localVersion.Split('.')
-            $remoteParts = $remoteVersion.Split('.')
-            $localMajor = [int]$localParts[0]
-            $localMinor = [int]$localParts[1]
-            $remoteMajor = [int]$remoteParts[0]
-            $remoteMinor = [int]$remoteParts[1]
-
-            if ($remoteMajor -eq $localMajor -and $remoteMinor -ge $localMinor) {
-              Write-Host "Een andere release-run heeft versie $remoteVersion al naar main gepusht. Deze run gaat verder met remote versie $remoteVersion."
-              git reset --hard origin/main
-              Set-Content -LiteralPath 'version.txt' -Value $remoteVersion -NoNewline
-              $target = $remoteVersion
-              "RELEASE_VERSION=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            }
-            else {
-              throw "Automatische versiecommit kon niet worden gepusht: remote version.txt=$remoteVersion, lokale version.txt=$localVersion."
-            }
-          }
+          Write-Host "Automatische versiecommit naar main gepusht."
 
       - name: Prepare launcher icon
         shell: pwsh
