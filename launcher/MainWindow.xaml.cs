@@ -401,26 +401,69 @@ public partial class MainWindow : Window
         var currentExe = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe)) return false;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
-        request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
-        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        if (!Version.TryParse(LauncherVersion, out var currentVersion))
+            return false;
 
-        using var response = await _http.SendAsync(request);
-        if (!response.IsSuccessStatusCode) return false;
+        GitHubRelease? release = null;
+        try
+        {
+            // Do not rely solely on /releases/latest. A malformed or incomplete
+            // latest release must not prevent the launcher from finding the
+            // newest usable HVMC.exe in the other published releases.
+            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
+            request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            using var response = await _http.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
+            }
+        }
+        catch
+        {
+            // Fall back to the releases list below.
+        }
 
-        var json = await response.Content.ReadAsStringAsync();
-        var release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
+        if (!HasLauncherAsset(release))
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    "https://api.github.com/repos/Bendemen-Studios/HVMC/releases?per_page=20");
+                request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
+                request.Headers.Accept.ParseAdd("application/vnd.github+json");
+                using var response = await _http.SendAsync(request);
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var releases = JsonSerializer.Deserialize<List<GitHubRelease>>(json, JsonOptions) ?? new();
+                    release = releases
+                        .Where(HasLauncherAsset)
+                        .Where(x => Version.TryParse(x.TagName?.Trim().TrimStart('v', 'V'), out _))
+                        .OrderByDescending(x => ParseReleaseVersion(x.TagName))
+                        .FirstOrDefault();
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         var tag = release?.TagName?.Trim();
-        if (string.IsNullOrWhiteSpace(tag)) return false;
+        if (string.IsNullOrWhiteSpace(tag))
+            return false;
 
-        var remoteText = tag.TrimStart('v', 'V');
-        if (!Version.TryParse(remoteText, out var remoteVersion)
-            || !Version.TryParse(LauncherVersion, out var currentVersion)
+        if (!Version.TryParse(tag.TrimStart('v', 'V'), out var remoteVersion)
             || remoteVersion <= currentVersion)
             return false;
 
-        var asset = release?.Assets?.FirstOrDefault(x => string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
-        if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl)) return false;
+        var asset = release?.Assets?.FirstOrDefault(x =>
+            string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
+        if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
+            return false;
 
         if (IsLauncherUpdateDeferred(remoteVersion))
         {
@@ -466,6 +509,16 @@ public partial class MainWindow : Window
             throw;
         }
     }
+
+    private static bool HasLauncherAsset(GitHubRelease? release)
+        => release?.Assets?.Any(x =>
+            string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(x.BrowserDownloadUrl)) == true;
+
+    private static Version ParseReleaseVersion(string? tag)
+        => Version.TryParse(tag?.Trim().TrimStart('v', 'V'), out var version)
+            ? version
+            : new Version(0, 0);
 
     private enum LauncherUpdateChoice
     {
