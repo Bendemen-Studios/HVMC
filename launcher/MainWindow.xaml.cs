@@ -134,39 +134,68 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
-        PlayButton.IsEnabled = false;
-        ExitButton.IsEnabled = false;
-        ShowLoading("Controleren op updates...");
+        // Never make the first visible launcher frame wait for network traffic.
+        // The launcher can safely open immediately; PlayButton performs the
+        // authoritative authorization check again before Minecraft starts.
+        _clientId = GetStableClientId();
+        _deviceToken = GetDeviceToken();
+
+        ExitButton.IsEnabled = true;
+        HideLoading();
+
+        if (string.IsNullOrWhiteSpace(_deviceToken))
+        {
+            AuthorizationPanel.Visibility = Visibility.Visible;
+            PlayButton.IsEnabled = false;
+            SetStatus("Deze pc moet eenmalig worden geautoriseerd.");
+        }
+        else
+        {
+            AuthorizationPanel.Visibility = Visibility.Collapsed;
+            PlayButton.IsEnabled = true;
+            SetStatus("Klaar om te spelen.");
+        }
+
+        WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
+
+        // Network checks continue after the UI is usable. Launcher update
+        // checks are deliberately delayed and cached so a normal startup does
+        // not wait on GitHub at all.
+        _ = InitializeStartupChecksAsync();
+    }
+
+    private async Task InitializeStartupChecksAsync()
+    {
         try
         {
-            _clientId = GetStableClientId();
-            _deviceToken = GetDeviceToken();
-            SetStatus("HVMC School Launcher voorbereiden...");
-            WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
-
-            // Start the independent release and authorization requests together.
-            // This avoids waiting for GitHub and the account server one after
-            // another; startup now waits only for the slower of the two.
-            SetLoadingText("HVMC launcher en pc-status controleren...");
-            WriteLauncherLog("Launcher-update- en pc-statuscontrole gestart.");
-            var launcherUpdateTask = CheckForLauncherUpdateAsync();
-            var authorizationTask = EnsurePcAuthorizedAsync();
-            var startupChecks = await Task.WhenAll(launcherUpdateTask, authorizationTask);
-
-            if (startupChecks[0])
-                return;
-
-            if (!startupChecks[1])
+            if (!string.IsNullOrWhiteSpace(_deviceToken))
             {
-                HideLoading();
-                ExitButton.IsEnabled = true;
-                return;
+                var authorized = await EnsurePcAuthorizedAsync();
+                if (!authorized)
+                {
+                    PlayButton.IsEnabled = false;
+                    return;
+                }
+
+                await SendPcHeartbeatAsync();
+                StartPcHeartbeat();
+                SetStatus("Klaar om te spelen.");
+                PlayButton.IsEnabled = true;
             }
-            await SendPcHeartbeatAsync();
-            StartPcHeartbeat();
-            HideLoading();
-            SetStatus("Klaar om te spelen.");
-            PlayButton.IsEnabled = true;
+
+            // Do not make launcher startup depend on GitHub. Check for a new
+            // launcher only after the window is responsive and only once per
+            // cache period. The Play button has its own authoritative checks.
+            if (ShouldCheckLauncherUpdate())
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+                if (!ShouldCheckLauncherUpdate())
+                    return;
+
+                var updated = await CheckForLauncherUpdateAsync();
+                if (!updated)
+                    SaveLauncherUpdateCheck();
+            }
         }
         catch (DeviceBlockedException)
         {
@@ -174,10 +203,49 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            HideLoading();
-            SetStatus("Controle mislukt.");
-            ShowError("Controle mislukt", ex);
-            ExitButton.IsEnabled = true;
+            // Startup maintenance must never turn a working launcher into a
+            // startup error. The Play flow performs the required checks again.
+            WriteLauncherLog($"Achtergrond-startupcontrole mislukt: {ex.Message}");
+            if (AuthorizationPanel.Visibility != Visibility.Visible)
+            {
+                SetStatus("Klaar om te spelen.");
+                PlayButton.IsEnabled = true;
+            }
+        }
+    }
+
+    private bool ShouldCheckLauncherUpdate()
+    {
+        try
+        {
+            var path = Path.Combine(_root, "launcher-update-check.txt");
+            if (!File.Exists(path))
+                return true;
+
+            var text = File.ReadAllText(path).Trim();
+            if (!DateTimeOffset.TryParse(text, out var lastCheck))
+                return true;
+
+            return DateTimeOffset.UtcNow - lastCheck >= TimeSpan.FromHours(6);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private void SaveLauncherUpdateCheck()
+    {
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.WriteAllText(
+                Path.Combine(_root, "launcher-update-check.txt"),
+                DateTimeOffset.UtcNow.ToString("O"));
+        }
+        catch
+        {
+            // A failed cache write must never affect launcher startup.
         }
     }
 
