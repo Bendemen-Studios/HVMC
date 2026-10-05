@@ -1,4 +1,4 @@
-param([switch]$ForceRedownload,[string]$LauncherPath,[string]$LauncherVersion,[int]$LauncherPid)
+param([switch]$ForceRedownload)
 
 $ErrorActionPreference = 'Stop'
 
@@ -137,100 +137,6 @@ function Test-GitHubOfflineError($Exception) {
 
 try {
     Log 'HVMC School Launcher updater gestart.'
-    function Update-LauncherIfNeeded {
-        if([string]::IsNullOrWhiteSpace($LauncherPath) -or
-           [string]::IsNullOrWhiteSpace($LauncherVersion) -or
-           $LauncherPid -le 0 -or
-           -not (Test-Path -LiteralPath $LauncherPath)){
-            return $false
-        }
-
-        try {
-            $currentVersion = [version]$LauncherVersion
-            $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=20" -Headers (Get-GitHubHeaders) -TimeoutSec 30
-            $candidate = @($releases) |
-                Where-Object {
-                    $_.assets -and
-                    (@($_.assets) | Where-Object { $_.name -ieq 'HVMC.exe' -and -not [string]::IsNullOrWhiteSpace([string]$_.browser_download_url) }).Count -gt 0 -and
-                    ([string]$_.tag_name).Trim() -match '^v?\d+(\.\d+){0,3}$'
-                } |
-                ForEach-Object {
-                    [pscustomobject]@{
-                        Release = $_
-                        Version = [version](([string]$_.tag_name).Trim().Trim() -replace '^[vV]','')
-                    }
-                } |
-                Where-Object { $_.Version -gt $currentVersion } |
-                Sort-Object Version -Descending |
-                Select-Object -First 1
-
-            if($null -eq $candidate){ return $false }
-
-            $asset = @($candidate.Release.assets) |
-                Where-Object { $_.name -ieq 'HVMC.exe' } |
-                Select-Object -First 1
-            if($null -eq $asset){ return $false }
-
-            Log "Nieuwe launcher gevonden: $($candidate.Release.tag_name)"
-            $launcherTemp = Join-Path $Root ("HVMC-launcher-{0}.exe" -f ([guid]::NewGuid().ToString('N')))
-            Download ([string]$asset.browser_download_url) $launcherTemp
-
-            $downloaded = Get-Item -LiteralPath $launcherTemp
-            if($asset.size -gt 0 -and $downloaded.Length -ne [int64]$asset.size){
-                throw "Gedownloade launcher heeft een onjuiste bestandsgrootte."
-            }
-            if($downloaded.Length -lt 1000000){
-                throw "Gedownloade launcher lijkt ongeldig of te klein."
-            }
-
-            $sourcePath = $launcherTemp
-            $targetPath = $LauncherPath
-            $replaceScript = @'
-param([int]$LauncherPid,[string]$SourcePath,[string]$TargetPath)
-
-Start-Sleep -Milliseconds 800
-while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) {
-    Start-Sleep -Milliseconds 200
-}
-for ($attempt = 1; $attempt -le 30; $attempt++) {
-    try {
-        Move-Item -LiteralPath $SourcePath -Destination $TargetPath -Force -ErrorAction Stop
-        Start-Process -FilePath $TargetPath
-        exit 0
-    } catch {
-        Start-Sleep -Milliseconds 500
-    }
-}
-Remove-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
-exit 1
-'@
-            $replacePath = Join-Path $Root ("HVMC-launcher-replace-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
-            Set-Content -LiteralPath $replacePath -Value $replaceScript -Encoding UTF8
-
-            Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-                '-NoProfile','-NonInteractive','-WindowStyle','Hidden',
-                '-ExecutionPolicy','Bypass','-File',$replacePath,
-                '-LauncherPid',$LauncherPid.ToString(),
-                '-SourcePath',$sourcePath,
-                '-TargetPath',$targetPath
-            ) -WindowStyle Hidden | Out-Null
-
-            Log "Launcher-update ingepland: $($candidate.Release.tag_name)"
-            return $true
-        } catch {
-            Log "Launcher zelf bijwerken mislukt: $($_.Exception.Message)"
-            return $false
-        }
-    }
-
-    if(Update-LauncherIfNeeded){
-        Log "Oude launcher wordt nu afgesloten zodat de nieuwe launcher kan worden geplaatst."
-        exit 10
-    }
-
-    # Launcher-updates staan bewust vóór de content-sync. Daardoor kan een
-    # nieuwe launcher worden opgehaald zonder eerst de volledige Minecraft
-    # content te controleren of opnieuw te downloaden.
     $versionResponse=Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-School-Launcher'} -UseBasicParsing -TimeoutSec 20
     $remoteVersion=([string]$versionResponse.Content).Trim()
     if([string]::IsNullOrWhiteSpace($remoteVersion)){throw 'version.txt is leeg.'}
