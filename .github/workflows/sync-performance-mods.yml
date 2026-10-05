@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: hvmc-content-index
+  cancel-in-progress: false
+
 jobs:
   update-index:
     runs-on: ubuntu-latest
@@ -18,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Build content index
         shell: python
@@ -28,7 +32,11 @@ jobs:
           import os
           import subprocess
 
-          tree_sha = subprocess.check_output(["git", "rev-parse", "HEAD:content"], text=True).strip()
+          tree_sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD:content"],
+              text=True
+          ).strip()
+
           files = []
           for root, _, names in os.walk("content"):
               for name in names:
@@ -38,8 +46,10 @@ jobs:
                   with open(path, "rb") as handle:
                       data = handle.read()
                   header = f"blob {len(data)}\0".encode()
-                  sha = hashlib.sha1(header + data).hexdigest()
-                  files.append({"path": path, "sha": sha})
+                  files.append({
+                      "path": path,
+                      "sha": hashlib.sha1(header + data).hexdigest()
+                  })
 
           files.sort(key=lambda item: item["path"])
           with open("content-index.json", "w", encoding="utf-8", newline="\n") as handle:
@@ -56,57 +66,26 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
           git add content-index.json
           if git diff --cached --quiet; then
             echo 'Content index is already current.'
             exit 0
           fi
+
           git commit -m 'Update GitHub content index'
 
           for attempt in 1 2 3; do
             git fetch origin main --force
-            if git rebase origin/main; then
-              if git push origin HEAD:main; then
-                echo 'Content index update pushed.'
-                exit 0
-              fi
-            else
-              git rebase --abort 2>/dev/null || true
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo 'Content index update pushed.'
+              exit 0
             fi
 
+            git rebase --abort 2>/dev/null || true
             if [ "$attempt" -lt 3 ]; then
               echo "Push/rebase attempt $attempt failed; retrying."
               sleep $((attempt * 2))
-              git fetch origin main --force
-              git reset --hard origin/main
-              python - <<'PY'
-import hashlib
-import json
-import os
-
-files = []
-for root, _, names in os.walk("content"):
-    for name in names:
-        path = os.path.join(root, name).replace("\\", "/")
-        if not path.startswith("content/"):
-            continue
-        with open(path, "rb") as handle:
-            data = handle.read()
-        header = f"blob {len(data)}\0".encode()
-        files.append({"path": path, "sha": hashlib.sha1(header + data).hexdigest()})
-
-files.sort(key=lambda item: item["path"])
-tree_sha = __import__("subprocess").check_output(["git", "rev-parse", "HEAD:content"], text=True).strip()
-with open("content-index.json", "w", encoding="utf-8", newline="\n") as handle:
-    json.dump({"version": "generated", "treeSha": tree_sha, "files": files}, handle, indent=2)
-    handle.write("\n")
-PY
-              git add content-index.json
-              if git diff --cached --quiet; then
-                echo 'Content index became current while retrying.'
-                exit 0
-              fi
-              git commit -m 'Update GitHub content index'
             fi
           done
 
