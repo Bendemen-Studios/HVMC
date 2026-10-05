@@ -1,0 +1,65 @@
+name: Sync performance mods
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-performance-mods.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-mods:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Quick Pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p content/mods
+          curl -L --fail --retry 3 --retry-delay 2 \
+            -o content/mods/quick-pack-fabric-1.5.1+26.2.jar \
+            'https://www.curseforge.com/api/v1/mods/1380888/files/9005019/download'
+          echo '248b1b361b5a2f25bfccc54df6d667ca02cad213  content/mods/quick-pack-fabric-1.5.1+26.2.jar' | sha1sum -c -
+
+      - name: Download Windows Priority Boost
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p content/mods
+          python - <<'PY'
+          import json, urllib.request
+          api = 'https://api.modrinth.com/v2/project/windows-priority-boost/version?game_versions=%5B%2226.2%22%5D&loaders=%5B%22fabric%22%5D'
+          with urllib.request.urlopen(api, timeout=60) as response:
+              versions = json.load(response)
+          if not versions:
+              raise SystemExit('Geen Windows Priority Boost build voor Fabric 26.2 gevonden.')
+          version = versions[0]
+          files = version.get('files', [])
+          primary = next((f for f in files if f.get('primary')), files[0] if files else None)
+          if not primary or not primary.get('url'):
+              raise SystemExit('Geen downloadbestand gevonden voor Windows Priority Boost.')
+          print(primary['url'])
+          with urllib.request.urlopen(primary['url'], timeout=120) as source, open('content/mods/windows-priority-boost-26.2.jar', 'wb') as target:
+              target.write(source.read())
+          print('Downloaded:', primary.get('filename', 'windows-priority-boost-26.2.jar'))
+          PY
+
+      - name: Commit mods to repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add content/mods/*.jar
+          if git diff --cached --quiet; then
+            echo 'Performance mods are already up to date.'
+            exit 0
+          fi
+          git commit -m 'Bundle performance mods for Minecraft 26.2'
+          git push
