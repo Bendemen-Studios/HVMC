@@ -1222,6 +1222,4 @@ public partial class MainWindow : Window
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private sealed record PcRegistrationResponse(string DeviceToken);
     private sealed record LeaseResponse(string LeaseId, string Username, string MinecraftAccessToken, string Uuid, string? Xuid, string AccountName);
-    private sealed record GitHubRelease(string? TagName, List<GitHubAsset>? Assets);
-    private sealed record GitHubAsset(string? Name, long Size, string? BrowserDownloadUrl);
 }
