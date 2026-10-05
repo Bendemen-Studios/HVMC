@@ -205,6 +205,96 @@ try {
         throw "Gebundelde Fabric-installatie ontbreekt: content/versions/$FabricProfile/$FabricProfile.json"
     }
     Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
+
+    # Bootstrap launcher updates from inside the updater itself.
+    $currentLauncher = [Environment]::ProcessPath
+    if(-not [string]::IsNullOrWhiteSpace($currentLauncher) -and
+       [IO.Path]::GetFileName($currentLauncher) -ieq 'HVMC.exe' -and
+       (Test-Path -LiteralPath $currentLauncher)){
+        try {
+            $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=20" -Headers (Get-GitHubHeaders) -TimeoutSec 30
+            $currentLauncherVersion = [version]$remoteVersion
+            $candidate = @($releases) |
+                Where-Object {
+                    $_.assets -and
+                    (@($_.assets) | Where-Object { $_.name -ieq 'HVMC.exe' }).Count -gt 0 -and
+                    ([string]$_.tag_name).Trim() -match '^v?d+(.d+){0,3}
+} catch {
+    Log "Updater mislukt: $($_.Exception.Message)"
+    if(-not $syncStarted -and (Test-GitHubOfflineError $_.Exception)){
+        Log 'GitHub is tijdelijk niet bereikbaar. Bestaande lokale HVMC-content mag worden gebruikt.'
+        exit 2
+    }
+    exit 1
+} finally {Log 'HVMC updater afgerond.'}
+
+                } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Release = $_
+                        Version = [version](([string]$_.tag_name).Trim().TrimStart('v','V'))
+                    }
+                } |
+                Where-Object { $_.Version -gt $currentLauncherVersion } |
+                Sort-Object Version -Descending |
+                Select-Object -First 1
+
+            if($null -ne $candidate){
+                $asset = @($candidate.Release.assets) | Where-Object { $_.name -ieq 'HVMC.exe' } | Select-Object -First 1
+                if($null -ne $asset -and -not [string]::IsNullOrWhiteSpace([string]$asset.browser_download_url)){
+                    Log "Nieuwe launcher gevonden: $($candidate.Release.tag_name)"
+                    $launcherTemp = Join-Path $Root ("HVMC-launcher-{0}.exe" -f ([guid]::NewGuid().ToString('N')))
+                    Download ([string]$asset.browser_download_url) $launcherTemp
+
+                    $downloaded = Get-Item -LiteralPath $launcherTemp
+                    if($asset.size -gt 0 -and $downloaded.Length -ne [int64]$asset.size){
+                        throw "Gedownloade launcher heeft een onjuiste bestandsgrootte."
+                    }
+                    if($downloaded.Length -lt 1000000){
+                        throw "Gedownloade launcher lijkt ongeldig of te klein."
+                    }
+
+                    $launcherPid = $PID
+                    $sourcePath = $launcherTemp.Replace("'","''")
+                    $targetPath = $currentLauncher.Replace("'","''")
+                    $replaceScript = @'
+param([int]$LauncherPid,[string]$SourcePath,[string]$TargetPath)
+
+Start-Sleep -Milliseconds 800
+while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 200
+}
+for ($attempt = 1; $attempt -le 30; $attempt++) {
+    try {
+        Move-Item -LiteralPath $SourcePath -Destination $TargetPath -Force -ErrorAction Stop
+        Start-Process -FilePath $TargetPath
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+Remove-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
+exit 1
+'@
+                    $replacePath = Join-Path $Root ("HVMC-launcher-replace-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+                    Set-Content -LiteralPath $replacePath -Value $replaceScript -Encoding UTF8
+                    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+                        '-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+                        '-ExecutionPolicy','Bypass','-File',$replacePath,
+                        '-LauncherPid',$launcherPid.ToString(),
+                        '-SourcePath',$sourcePath,
+                        '-TargetPath',$targetPath
+                    ) -WindowStyle Hidden | Out-Null
+
+                    Log "Launcher-update ingepland."
+                    exit 10
+                }
+            }
+        } catch {
+            Log "Launcher zelf bijwerken mislukt: $($_.Exception.Message)"
+        }
+    }
+
     Log "HVMC content + gebundelde Fabric-runtime synchronisatie voltooid."
     exit 0
 } catch {
