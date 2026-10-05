@@ -530,12 +530,9 @@ public partial class MainWindow : Window
         if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
             return false;
 
-        if (IsLauncherUpdateDeferred(remoteVersion))
-        {
-            SetStatus($"Update {tag} is uitgesteld voor 24 uur.");
-            return false;
-        }
-
+        // Launcher updates are mandatory and automatic. This is the
+        // bootstrap path for already-installed laptops: they receive the new
+        // HVMC.exe without needing HVMC-Setup.exe or a reinstall.
         SetLoadingText($"Nieuwe HVMC-versie {tag} gevonden. Update wordt gedownload...");
         SetStatus($"HVMC {tag} wordt automatisch bijgewerkt...");
         var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
