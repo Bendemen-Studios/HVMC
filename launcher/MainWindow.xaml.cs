@@ -16,6 +16,45 @@ namespace HVMCLauncher;
 
 public partial class MainWindow : Window
 {
+    private sealed class ResilientHttpHandler : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Exception? lastException = null;
+
+            for (var attempt = 1; attempt <= 4; attempt++)
+            {
+                try
+                {
+                    var response = await base.SendAsync(request, cancellationToken);
+
+                    if ((int)response.StatusCode >= 500 && attempt < 4)
+                    {
+                        response.Dispose();
+                        await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+                        continue;
+                    }
+
+                    return response;
+                }
+                catch (HttpRequestException ex) when (attempt < 4)
+                {
+                    lastException = ex;
+                    await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+                }
+                catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested && attempt < 4)
+                {
+                    lastException = ex;
+                    await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+                }
+            }
+
+            throw lastException ?? new HttpRequestException("Minecraft-download mislukt.");
+        }
+    }
+
     private const string PoolApi = "https://accounts.hvmc.nl";
     private const string LatestReleaseApi = "https://api.github.com/repos/Bendemen-Studios/HVMC/releases/latest";
     private const string MinecraftVersion = "26.2";
@@ -27,6 +66,7 @@ public partial class MainWindow : Window
 
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
+    private readonly HttpClient _minecraftHttp = CreateMinecraftHttpClient();
     private string? _clientId;
     private string? _deviceToken;
     private string? _leaseId;
@@ -42,7 +82,13 @@ public partial class MainWindow : Window
         InitializeComponent();
         Directory.CreateDirectory(_root);
         Loaded += MainWindow_Loaded;
-        Closed += (_, _) => { _leaseHeartbeatCts?.Cancel(); _pcHeartbeatCts?.Cancel(); };
+        Closed += (_, _) =>
+        {
+            _leaseHeartbeatCts?.Cancel();
+            _pcHeartbeatCts?.Cancel();
+            _http.Dispose();
+            _minecraftHttp.Dispose();
+        };
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -152,9 +198,10 @@ public partial class MainWindow : Window
             _contentUpdateFailed = false;
             SetStatus("HVMC content synchroniseren...");
             await RunUpdaterAsync();
-            var minecraftLauncher = new MinecraftLauncher(minecraftPath);
             SetStatus("Minecraft voorbereiden...");
-            await minecraftLauncher.InstallAsync(MinecraftVersion);
+            var minecraftLauncher = new MinecraftLauncher(
+                MinecraftLauncherParameters.CreateDefault(minecraftPath, _minecraftHttp));
+            await InstallMinecraftWithRetryAsync(minecraftLauncher);
             _clientId ??= GetStableClientId();
             _deviceToken ??= GetDeviceToken();
             if (string.IsNullOrWhiteSpace(_deviceToken)) throw new InvalidOperationException("Deze pc is niet geautoriseerd.");
@@ -309,6 +356,59 @@ public partial class MainWindow : Window
 
             await Task.Delay(250);
         }
+    }
+
+    private async Task InstallMinecraftWithRetryAsync(MinecraftLauncher launcher)
+    {
+        Exception? lastException = null;
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                SetLoadingText(attempt == 1
+                    ? "Minecraft-bestanden controleren..."
+                    : $"Minecraft-download opnieuw proberen ({attempt}/3)...");
+                SetStatus(attempt == 1
+                    ? "Minecraft voorbereiden..."
+                    : $"Minecraft-download opnieuw proberen ({attempt}/3)...");
+
+                await launcher.InstallAsync(MinecraftVersion);
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                try
+                {
+                    var message = ex.GetBaseException().Message;
+                    File.AppendAllText(
+                        Path.Combine(_root, "minecraft-download.log"),
+                        $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Poging {attempt}/3 mislukt: {message}{Environment.NewLine}");
+                }
+                catch { }
+
+                if (attempt < 3)
+                    await Task.Delay(TimeSpan.FromSeconds(attempt * 2));
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Minecraft kon niet worden gedownload. Controleer je internetverbinding en probeer het opnieuw.",
+            lastException);
+    }
+
+    private static HttpClient CreateMinecraftHttpClient()
+    {
+        var handler = new ResilientHttpHandler
+        {
+            InnerHandler = new HttpClientHandler()
+        };
+
+        return new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(180)
+        };
     }
 
     private void ExitButton_Click(object sender, RoutedEventArgs e) => Close();
