@@ -1,9 +1,6 @@
 using System.IO;
 using Microsoft.Win32;
 using System.Diagnostics;
-using System.Net.Http;
-using System.Security.Cryptography;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using WpfMessageBox = System.Windows.MessageBox;
@@ -16,14 +13,6 @@ public partial class App : System.Windows.Application
     private const string Publisher = "Bendemen Studios";
 
     public static string AppVersion => typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
-
-    private const string ReleasesApi =
-        "https://api.github.com/repos/Bendemen-Studios/HVMC/releases?per_page=20";
-
-    private static readonly HttpClient Http = new()
-    {
-        Timeout = TimeSpan.FromMinutes(5)
-    };
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -197,210 +186,6 @@ public partial class App : System.Windows.Application
         return dialog.ShowDialog() == true;
     }
 
-    private static async Task<LauncherUpdateResult> CheckForLauncherUpdateAsync()
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, ReleasesApi);
-            request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
-            request.Headers.Accept.ParseAdd("application/vnd.github+json");
-
-            using var response = await Http.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead);
-
-            // GitHub may have a newer draft/prerelease at the top of its release
-            // list. Those releases must never block the launcher or be presented
-            // as a broken update. We explicitly select the newest stable release.
-            if (!response.IsSuccessStatusCode)
-            {
-                var status = (int)response.StatusCode;
-                if (status == 408 || status == 429 || status >= 500)
-                    return LauncherUpdateResult.Offline;
-
-                throw new InvalidOperationException(
-                    $"GitHub releasecontrole mislukt (HTTP {status} {response.StatusCode}).");
-            }
-
-            var json = await response.Content.ReadAsStringAsync();
-            var releases = JsonSerializer.Deserialize<List<GitHubRelease>>(json, JsonOptions);
-
-            var release = releases?
-                .Where(x => !x.Draft && !x.Prerelease && !string.IsNullOrWhiteSpace(x.TagName))
-                .Select(x => new { Release = x, Version = ParseReleaseVersion(x.TagName!) })
-                .Where(x => x.Version is not null)
-                .OrderByDescending(x => x.Version)
-                .Select(x => x.Release)
-                .FirstOrDefault();
-
-            if (release is null)
-                return LauncherUpdateResult.UpToDate;
-
-            var remoteText = release.TagName!.Trim().TrimStart('v', 'V');
-
-            if (!Version.TryParse(remoteText, out var remoteVersion) ||
-                !Version.TryParse(AppVersion, out var currentVersion))
-            {
-                throw new InvalidOperationException(
-                    "De HVMC-versie van de launcher kon niet worden gecontroleerd.");
-            }
-
-            if (remoteVersion <= currentVersion)
-                return LauncherUpdateResult.UpToDate;
-
-            var asset = release.Assets?
-                .FirstOrDefault(x => string.Equals(
-                    x.Name,
-                    "HVMC.exe",
-                    StringComparison.OrdinalIgnoreCase));
-
-            if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
-                throw new InvalidOperationException(
-                    $"HVMC {release.TagName} is beschikbaar, maar bevat geen HVMC.exe.");
-
-            var tempPath = Path.Combine(
-                Root,
-                $"HVMCLauncher-{remoteVersion}-{Guid.NewGuid():N}.tmp");
-
-            try
-            {
-                using var downloadRequest = new HttpRequestMessage(
-                    HttpMethod.Get,
-                    asset.BrowserDownloadUrl);
-
-                downloadRequest.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
-
-                using var downloadResponse = await Http.SendAsync(
-                    downloadRequest,
-                    HttpCompletionOption.ResponseHeadersRead);
-
-                if (!downloadResponse.IsSuccessStatusCode)
-                {
-                    var status = (int)downloadResponse.StatusCode;
-                    if (status == 408 || status == 429 || status >= 500)
-                        return LauncherUpdateResult.Offline;
-
-                    throw new InvalidOperationException(
-                        $"HVMC {release.TagName} kon niet worden gedownload (HTTP {status} {downloadResponse.StatusCode}).");
-                }
-
-                await using (var source = await downloadResponse.Content.ReadAsStreamAsync())
-                await using (var target = File.Create(tempPath))
-                {
-                    await source.CopyToAsync(target);
-                }
-
-                var downloadedSize = new FileInfo(tempPath).Length;
-                if (downloadedSize <= 0 || (asset.Size > 0 && downloadedSize != asset.Size))
-                    throw new InvalidOperationException(
-                        "De nieuwe launcher heeft een onjuiste bestandsgrootte.");
-
-                if (!string.IsNullOrWhiteSpace(asset.Digest))
-                {
-                    var expectedDigest = asset.Digest.Trim();
-                    if (expectedDigest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
-                        expectedDigest = expectedDigest["sha256:".Length..];
-
-                    var actualDigest = await Sha256HexAsync(tempPath);
-                    if (!string.Equals(
-                        actualDigest,
-                        expectedDigest,
-                        StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new InvalidOperationException(
-                            "De nieuwe launcher kon niet worden geverifieerd.");
-                    }
-                }
-
-                var currentHash = await Sha256HexAsync(InstalledExe);
-                var newHash = await Sha256HexAsync(tempPath);
-
-                if (string.Equals(
-                    currentHash,
-                    newHash,
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        "GitHub meldt een nieuwere versie, maar het gedownloade bestand is identiek aan de huidige launcher.");
-                }
-
-                ScheduleSelfReplacement(InstalledExe, tempPath);
-                return LauncherUpdateResult.Updated;
-            }
-            catch
-            {
-                try { File.Delete(tempPath); } catch { }
-                throw;
-            }
-        }
-        catch (HttpRequestException)
-        {
-            // Network/DNS/TLS failures are the explicit offline exception.
-            return LauncherUpdateResult.Offline;
-        }
-        catch (TaskCanceledException)
-        {
-            return LauncherUpdateResult.Offline;
-        }
-    }
-
-    private enum LauncherUpdateResult
-    {
-        UpToDate,
-        Updated,
-        Offline
-    }
-
-    private static Version? ParseReleaseVersion(string tagName)
-    {
-        var versionText = tagName.Trim().TrimStart('v', 'V');
-        return Version.TryParse(versionText, out var version) ? version : null;
-    }
-
-    private static async Task<string> Sha256HexAsync(string path)
-    {
-        await using var stream = File.OpenRead(path);
-        var hash = await SHA256.HashDataAsync(stream);
-        return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
-    private static void ScheduleSelfReplacement(string destinationExe, string updateExe)
-    {
-        var pid = Environment.ProcessId;
-        var source = Ps(updateExe);
-        var destination = Ps(destinationExe);
-        var workingDirectory = Ps(InstallDir);
-
-        var script =
-            "$pid=" + pid + ";" +
-            "$src=" + source + ";" +
-            "$dst=" + destination + ";" +
-            "Start-Sleep -Milliseconds 700;" +
-            "while(Get-Process -Id $pid -ErrorAction SilentlyContinue){" +
-                "Start-Sleep -Milliseconds 200" +
-            "};" +
-            "Move-Item -LiteralPath $src -Destination $dst -Force;" +
-            "Start-Process -FilePath $dst -WorkingDirectory " +
-                workingDirectory + ";";
-
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden,
-            ArgumentList =
-            {
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy", "Bypass",
-                "-Command", script
-            }
-        });
-
-        Environment.Exit(0);
-    }
-
     private static void RegisterWindowsApp()
     {
         try
@@ -547,20 +332,4 @@ public partial class App : System.Windows.Application
     private static string Ps(string value) =>
         "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
-    private sealed record GitHubRelease(
-        string? TagName,
-        bool Draft,
-        bool Prerelease,
-        List<GitHubAsset>? Assets);
-
-    private sealed record GitHubAsset(
-        string? Name,
-        long Size,
-        string? BrowserDownloadUrl,
-        string? Digest);
 }
