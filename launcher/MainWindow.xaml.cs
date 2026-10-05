@@ -754,6 +754,16 @@ public partial class MainWindow : Window
         if (forceRedownload)
             startInfo.ArgumentList.Add("-ForceRedownload");
 
+        // Pass the exact launcher path/version/PID to the embedded updater.
+        // This allows an older installed launcher to replace itself and then
+        // exit cleanly, without requiring a manual reinstall on every laptop.
+        startInfo.ArgumentList.Add("-LauncherPath");
+        startInfo.ArgumentList.Add(Environment.ProcessPath ?? string.Empty);
+        startInfo.ArgumentList.Add("-LauncherVersion");
+        startInfo.ArgumentList.Add(LauncherVersion);
+        startInfo.ArgumentList.Add("-LauncherPid");
+        startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+
         using var p = Process.Start(startInfo)
             ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
         var stdoutTask = p.StandardOutput.ReadToEndAsync();
@@ -761,6 +771,16 @@ public partial class MainWindow : Window
         await p.WaitForExitAsync();
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
+        if (p.ExitCode == 10)
+        {
+            // The updater has downloaded a newer launcher and scheduled the
+            // replacement process. This launcher must exit now so the updater
+            // can replace HVMC.exe and start the new version.
+            SetStatus("Nieuwe launcher gedownload. Launcher wordt bijgewerkt...");
+            Environment.Exit(0);
+            return;
+        }
+
         if (p.ExitCode == 2)
         {
             // Explicit exception: the updater itself could not reach GitHub
