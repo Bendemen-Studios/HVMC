@@ -70,31 +70,8 @@ public partial class App : System.Windows.Application
                 return;
             }
 
-            LauncherUpdateResult updateResult;
-            while (true)
-            {
-                try
-                {
-                    updateResult = await CheckForLauncherUpdateAsync();
-                    break;
-                }
-                catch (Exception updateEx)
-                {
-                    var retry = ShowErrorDialog(
-                        "Launcher-update mislukt",
-                        updateEx,
-                        "OPNIEUW DOWNLOADEN");
-
-                    if (!retry)
-                    {
-                        Shutdown(1);
-                        return;
-                    }
-                }
-            }
-
-            if (updateResult == LauncherUpdateResult.Updated)
-                return;
+            // Do not block the first WPF frame on a network release check.
+            // MainWindow performs the launcher update check once it is visible.
 
             RegisterWindowsApp();
             CreateShortcuts();
