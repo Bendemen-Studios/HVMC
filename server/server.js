@@ -549,45 +549,87 @@ app.post('/v1/launcher/lease/acquire', async (req, res) => {
   const clientId = String(req.body?.clientId || '').trim().slice(0, 200);
   if (!clientId) return res.status(400).json({ error: 'clientId is required' });
 
-  let lease;
-  try {
-    lease = db.transaction(() => {
-      const account = db.prepare(`SELECT accounts.* FROM accounts
-        WHERE accounts.enabled = 1
-          AND accounts.microsoft_oid IS NOT NULL
-          AND accounts.microsoft_refresh_token_enc IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM leases WHERE leases.account_id = accounts.id)
-        ORDER BY accounts.id LIMIT 1`).get();
-      if (!account) throw Object.assign(new Error('Geen vrij gekoppeld Minecraft-account beschikbaar.'), { status: 409 });
-      const now = new Date();
-      const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
-      const leaseId = crypto.randomUUID();
-      db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)').run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
-      return { leaseId, accountId: account.id, slot: account.slot, accountName: account.label, microsoftUsername: account.microsoft_username, encryptedRefreshToken: account.microsoft_refresh_token_enc, expiresAt: expires.toISOString() };
-    })();
-  } catch (err) {
-    return res.status(err.status || 500).json({ error: err.message || 'internal error' });
-  }
+  // Try each currently free account until one authenticates successfully.
+  // A broken account must never block the entire pool.
+  const skippedAccountIds = new Set();
+  const failures = [];
 
-  try {
-    const refreshToken = decryptSecret(lease.encryptedRefreshToken);
-    const token = await refreshMicrosoftAccessToken(refreshToken);
-    const minecraft = await minecraftSessionFromMicrosoftAccessToken(token.access_token);
-    if (token.refresh_token) db.prepare('UPDATE accounts SET microsoft_refresh_token_enc = ? WHERE id = ?').run(encryptSecret(token.refresh_token), lease.accountId);
-    res.json({
-      leaseId: lease.leaseId,
-      accountId: lease.slot,
-      accountName: lease.accountName,
-      microsoftUsername: lease.microsoftUsername,
-      username: minecraft.username,
-      uuid: minecraft.uuid,
-      minecraftAccessToken: minecraft.accessToken,
-      expiresIn: minecraft.expiresIn,
-      expiresAt: lease.expiresAt
-    });
-  } catch (err) {
-    db.prepare('DELETE FROM leases WHERE id = ?').run(lease.leaseId);
-    res.status(502).json({ error: err.message || 'Pool-account authenticatie mislukt.' });
+  while (true) {
+    let lease;
+    try {
+      lease = db.transaction(() => {
+        const accounts = db.prepare(`SELECT accounts.* FROM accounts
+          WHERE accounts.enabled = 1
+            AND accounts.microsoft_oid IS NOT NULL
+            AND accounts.microsoft_refresh_token_enc IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM leases WHERE leases.account_id = accounts.id)
+          ORDER BY accounts.id`).all();
+        const account = accounts.find(item => !skippedAccountIds.has(item.id));
+        if (!account) return null;
+
+        const now = new Date();
+        const expires = new Date(now.getTime() + DEFAULT_LEASE_SECONDS * 1000);
+        const leaseId = crypto.randomUUID();
+        db.prepare('INSERT INTO leases (id,account_id,client_id,acquired_at,heartbeat_at,expires_at) VALUES (?,?,?,?,?,?)')
+          .run(leaseId, account.id, clientId, now.toISOString(), now.toISOString(), expires.toISOString());
+        return {
+          leaseId,
+          accountId: account.id,
+          slot: account.slot,
+          accountName: account.label,
+          microsoftUsername: account.microsoft_username,
+          encryptedRefreshToken: account.microsoft_refresh_token_enc,
+          expiresAt: expires.toISOString()
+        };
+      })();
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message || 'internal error' });
+    }
+
+    if (!lease) {
+      if (failures.length) {
+        return res.status(502).json({
+          error: 'Geen van de beschikbare Microsoft-accounts kon worden gebruikt. Controleer de accountkoppelingen in het HVMC Account Dashboard.'
+        });
+      }
+      return res.status(409).json({ error: 'Geen vrij gekoppeld Minecraft-account beschikbaar.' });
+    }
+
+    try {
+      const refreshToken = decryptSecret(lease.encryptedRefreshToken);
+      const token = await refreshMicrosoftAccessToken(refreshToken);
+      const minecraft = await minecraftSessionFromMicrosoftAccessToken(token.access_token);
+      if (token.refresh_token) {
+        db.prepare('UPDATE accounts SET microsoft_refresh_token_enc = ? WHERE id = ?')
+          .run(encryptSecret(token.refresh_token), lease.accountId);
+      }
+      return res.json({
+        leaseId: lease.leaseId,
+        accountId: lease.slot,
+        accountName: lease.accountName,
+        microsoftUsername: lease.microsoftUsername,
+        username: minecraft.username,
+        uuid: minecraft.uuid,
+        minecraftAccessToken: minecraft.accessToken,
+        expiresIn: minecraft.expiresIn,
+        expiresAt: lease.expiresAt
+      });
+    } catch (err) {
+      db.prepare('DELETE FROM leases WHERE id = ?').run(lease.leaseId);
+      skippedAccountIds.add(lease.accountId);
+      failures.push({ accountId: lease.accountId, message: err.message || 'authentication failed' });
+
+      // AADSTS70000/invalid_grant means the stored Microsoft refresh token is
+      // no longer usable. Clear that link so this account is automatically
+      // skipped on future launches until it is linked again in the dashboard.
+      if (/AADSTS70000|AADSTS70008|AADSTS700082|AADSTS700084|AADSTS70043|invalid_grant/i.test(String(err.message || ''))) {
+        db.prepare('UPDATE accounts SET microsoft_oid = NULL, microsoft_username = NULL, microsoft_refresh_token_enc = NULL WHERE id = ?')
+          .run(lease.accountId);
+      }
+
+      // Do not expose the failing account's Microsoft error to the launcher.
+      // Try the next free account instead.
+    }
   }
 });
 
