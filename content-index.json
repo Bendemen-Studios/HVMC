@@ -1,6 +1,6 @@
 {
-  "version": "3.53",
-  "treeSha": "61e974763e7bf3af4ec388b19d4b59986e415c5b",
+  "version": "generated",
+  "treeSha": "b0669157966a2f5e89c7da3d53d8285ba4eb6ec8",
   "files": [
     {
       "path": "content/config/.gitkeep",
@@ -115,8 +115,8 @@
       "sha": "b5ded925448e9f632b40cad0cb479a466efeb832"
     },
     {
-      "path": "content/config/fancymenu/ui_themes/user_variables.db",
-      "sha": "117143c4ec3657fc8b15056a36586b51f597319a7"
+      "path": "content/config/fancymenu/user_variables.db",
+      "sha": "117143c4ec3657fc8b15056a36586b51f597319a"
     },
     {
       "path": "content/config/ferritecore.mixin.properties",
