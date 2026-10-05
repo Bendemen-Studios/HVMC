@@ -105,6 +105,16 @@ CREATE TABLE IF NOT EXISTS pool_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS link_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  device_code_enc TEXT NOT NULL,
+  interval_seconds INTEGER NOT NULL DEFAULT 5,
+  next_poll_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_link_attempts_expiry ON link_attempts(expires_at);
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_refresh_token_enc TEXT'); } catch {}
@@ -137,7 +147,6 @@ CREATE INDEX IF NOT EXISTS idx_admin_sessions_expiry ON admin_sessions(expires_a
 const emailAuthCodes = new Map();
 const emailAuthChallenges = new Map();
 const emailAuthSendState = new Map();
-const linkAttempts = new Map();
 const launcherRate = new Map();
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
@@ -158,7 +167,7 @@ function cleanupState() {
   for (const [challengeId, info] of emailAuthCodes) if (info.expiresAt <= now) emailAuthCodes.delete(challengeId);
   for (const [challengeId, info] of emailAuthChallenges) if (info.expiresAt <= now) emailAuthChallenges.delete(challengeId);
   for (const [key, info] of emailAuthSendState) if (info.resetAt <= now) emailAuthSendState.delete(key);
-  for (const [id, attempt] of linkAttempts) if (attempt.expiresAt <= now) linkAttempts.delete(id);
+  db.prepare('DELETE FROM link_attempts WHERE expires_at <= ?').run(new Date(now).toISOString());
   cleanupExpired();
 }
 setInterval(cleanupState, 5_000).unref();
@@ -430,11 +439,14 @@ app.post('/v1/admin/accounts/:id/link/start', async (req, res) => {
   const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
   if (!account) return res.status(404).json({ error: 'Account niet gevonden.' });
   if (db.prepare('SELECT 1 FROM leases WHERE account_id = ?').get(id)) return res.status(409).json({ error: 'Geef het account eerst vrij.' });
-  for (const [attemptId, attempt] of linkAttempts) if (attempt.accountId === id) linkAttempts.delete(attemptId);
+  db.prepare('DELETE FROM link_attempts WHERE account_id = ?').run(id);
   try {
     const device = await microsoftDeviceStart();
     const attemptId = crypto.randomUUID();
-    linkAttempts.set(attemptId, { accountId: id, deviceCode: String(device.device_code), interval: Math.max(Number(device.interval || 5), 5), nextPollAt: Date.now(), expiresAt: Date.now() + Number(device.expires_in || 900) * 1000 });
+    const intervalSeconds = Math.max(Number(device.interval || 5), 5);
+    const expiresAt = new Date(Date.now() + Number(device.expires_in || 900) * 1000).toISOString();
+    db.prepare('INSERT INTO link_attempts (attempt_id,account_id,device_code_enc,interval_seconds,next_poll_at,expires_at,created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(attemptId, id, encryptSecret(String(device.device_code)), intervalSeconds, new Date().toISOString(), expiresAt, new Date().toISOString());
     res.json({ ok: true, attemptId, verificationUri: device.verification_uri || device.verification_url || 'https://microsoft.com/devicelogin', userCode: device.user_code, message: device.message || 'Open Microsoft login and enter the code.', expiresIn: Number(device.expires_in || 900) });
   } catch (err) { res.status(502).json({ error: err.message || 'Microsoft-login kon niet worden gestart.' }); }
 });
@@ -442,28 +454,45 @@ app.post('/v1/admin/accounts/:id/link/poll', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const id = Number(req.params.id);
   const attemptId = String(req.body?.attemptId || '');
-  const attempt = linkAttempts.get(attemptId);
-  if (!attempt || attempt.accountId !== id) return res.status(404).json({ error: 'Koppelingssessie niet gevonden of verlopen.' });
-  if (Date.now() >= attempt.expiresAt) { linkAttempts.delete(attemptId); return res.json({ state: 'expired' }); }
-  if (Date.now() < attempt.nextPollAt) return res.json({ state: 'pending' });
+  const attempt = db.prepare('SELECT * FROM link_attempts WHERE attempt_id = ? AND account_id = ?').get(attemptId, id);
+  if (!attempt) return res.status(404).json({ error: 'Koppelingssessie niet gevonden of verlopen.' });
+  const expiresAtMs = Date.parse(attempt.expires_at);
+  if (!Number.isFinite(expiresAtMs) || Date.now() >= expiresAtMs) {
+    db.prepare('DELETE FROM link_attempts WHERE attempt_id = ?').run(attemptId);
+    return res.json({ state: 'expired' });
+  }
+  const nextPollAtMs = Date.parse(attempt.next_poll_at);
+  if (Number.isFinite(nextPollAtMs) && Date.now() < nextPollAtMs) return res.json({ state: 'pending' });
   try {
-    const result = await microsoftDevicePoll(attempt.deviceCode);
-    attempt.nextPollAt = Date.now() + attempt.interval * 1000;
+    const deviceCode = decryptSecret(attempt.device_code_enc);
+    const result = await microsoftDevicePoll(deviceCode);
+    const nextPollAt = new Date(Date.now() + Number(attempt.interval_seconds || 5) * 1000).toISOString();
+    db.prepare('UPDATE link_attempts SET next_poll_at = ? WHERE attempt_id = ?').run(nextPollAt, attemptId);
     if (result.state === 'pending') return res.json({ state: 'pending' });
-    if (result.state === 'slow_down') { attempt.interval += 5; return res.json({ state: 'pending' }); }
-    if (result.state !== 'complete') { linkAttempts.delete(attemptId); return res.json({ state: result.state, error: result.message }); }
+    if (result.state === 'slow_down') {
+      const nextInterval = Number(attempt.interval_seconds || 5) + 5;
+      db.prepare('UPDATE link_attempts SET interval_seconds = ?, next_poll_at = ? WHERE attempt_id = ?').run(nextInterval, new Date(Date.now() + nextInterval * 1000).toISOString(), attemptId);
+      return res.json({ state: 'pending' });
+    }
+    if (result.state !== 'complete') {
+      db.prepare('DELETE FROM link_attempts WHERE attempt_id = ?').run(attemptId);
+      return res.json({ state: result.state, error: result.message });
+    }
     const profile = await profileFromAccessToken(result.data.access_token, result.data.id_token);
     const oid = String(profile?.id || '');
     if (!oid) throw new Error('Microsoft-account kon niet worden geïdentificeerd.');
     const username = String(profile.userPrincipalName || profile.mail || '');
     const owner = db.prepare('SELECT id,label FROM accounts WHERE microsoft_oid = ? AND id <> ?').get(oid, id);
-    if (owner) { linkAttempts.delete(attemptId); return res.status(409).json({ state: 'conflict', error: `Dit Microsoft-account is al gekoppeld aan ${owner.label}.` }); }
+    if (owner) { db.prepare('DELETE FROM link_attempts WHERE attempt_id = ?').run(attemptId); return res.status(409).json({ state: 'conflict', error: `Dit Microsoft-account is al gekoppeld aan ${owner.label}.` }); }
     const refreshToken = String(result.data.refresh_token || '');
     if (!refreshToken) throw new Error('Microsoft gaf geen refresh-token terug; controleer of offline_access is toegestaan.');
     db.prepare('UPDATE accounts SET microsoft_oid = ?, microsoft_username = ?, microsoft_refresh_token_enc = ? WHERE id = ?').run(oid, username || null, encryptSecret(refreshToken), id);
-    linkAttempts.delete(attemptId);
+    db.prepare('DELETE FROM link_attempts WHERE attempt_id = ?').run(attemptId);
     res.json({ state: 'complete', account: { id, microsoftOid: oid, microsoftUsername: username } });
-  } catch (err) { linkAttempts.delete(attemptId); res.status(502).json({ state: 'error', error: err.message || 'Microsoft-koppeling mislukt.' }); }
+  } catch (err) {
+    db.prepare('DELETE FROM link_attempts WHERE attempt_id = ?').run(attemptId);
+    res.status(502).json({ state: 'error', error: err.message || 'Microsoft-koppeling mislukt.' });
+  }
 });
 
 app.get('/v1/status', (req, res) => {
