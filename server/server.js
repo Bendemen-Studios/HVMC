@@ -105,6 +105,8 @@ CREATE TABLE IF NOT EXISTS pool_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+`);
+
 // Device-login attempts are temporary. Migrate any older link_attempts
 // schema before creating indexes, because an old table may not have expires_at.
 const requiredLinkAttemptColumns = ['attempt_id','account_id','device_code_enc','interval_seconds','next_poll_at','expires_at','created_at'];
@@ -127,7 +129,6 @@ db.exec(`
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_link_attempts_expiry ON link_attempts(expires_at);
-`);
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_refresh_token_enc TEXT'); } catch {}
