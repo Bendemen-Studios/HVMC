@@ -59,7 +59,7 @@ The result is a simpler and more manageable Minecraft experience for organizatio
 ### Want to use the software for your organisation?
 
 Mail then to info@bendemen.nl
-(The launcher is currently only available in the dutch language)
+- (The launcher is currently only available in the dutch language we are working on english language see Launcher Features)
 
 ### (Upcoming) Features
 
