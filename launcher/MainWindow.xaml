@@ -32,5 +32,40 @@
         </StackPanel>
 
         <TextBlock Grid.Row="3" Text="Bendemen Studios" FontSize="12" Foreground="#9A907D" HorizontalAlignment="Center" Margin="0,25,0,0" />
+
+        <!-- Full-window loading overlay used while checking/updating HVMC. -->
+        <Border x:Name="LoadingOverlay"
+                Grid.RowSpan="4"
+                Background="#F7F4EC"
+                Visibility="Visible">
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Width="340">
+                <TextBlock Text="HVMC"
+                           FontFamily="Segoe UI"
+                           FontSize="58"
+                           FontWeight="Bold"
+                           Foreground="#B8871F"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="SCHOOL LAUNCHER"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Foreground="#746B5B"
+                           HorizontalAlignment="Center"
+                           Margin="0,0,0,30" />
+                <ProgressBar x:Name="LoadingProgress"
+                             Height="8"
+                             IsIndeterminate="True"
+                             Foreground="#D7A62F"
+                             Background="#E5DDCA" />
+                <TextBlock x:Name="LoadingText"
+                           Text="Controleren op updates..."
+                           FontSize="15"
+                           Foreground="#746B5B"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           Margin="0,16,0,0" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>
