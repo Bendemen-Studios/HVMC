@@ -1020,7 +1020,7 @@ public partial class MainWindow : Window
 
             if (remoteUpdater.Contains("param([switch]$ForceRedownload", StringComparison.Ordinal) &&
                 remoteUpdater.Contains("HVMC updater afgerond.", StringComparison.Ordinal) &&
-                remoteUpdater.Contains("Update-LauncherIfNeeded", StringComparison.Ordinal))
+                !remoteUpdater.Contains("Update-LauncherIfNeeded", StringComparison.Ordinal))
             {
                 await File.WriteAllTextAsync(updater, remoteUpdater, new UTF8Encoding(false));
                 updaterRefreshed = true;
@@ -1065,16 +1065,6 @@ public partial class MainWindow : Window
         };
         if (forceRedownload)
             startInfo.ArgumentList.Add("-ForceRedownload");
-
-        // Pass the exact launcher path/version/PID to the embedded updater.
-        // This allows an older installed launcher to replace itself and then
-        // exit cleanly, without requiring a manual reinstall on every laptop.
-        startInfo.ArgumentList.Add("-LauncherPath");
-        startInfo.ArgumentList.Add(Environment.ProcessPath ?? string.Empty);
-        startInfo.ArgumentList.Add("-LauncherVersion");
-        startInfo.ArgumentList.Add(LauncherVersion);
-        startInfo.ArgumentList.Add("-LauncherPid");
-        startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
 
         using var p = Process.Start(startInfo)
             ?? throw new InvalidOperationException("HVMC updater kon niet worden gestart.");
