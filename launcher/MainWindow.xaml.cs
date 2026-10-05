@@ -135,13 +135,19 @@ public partial class MainWindow : Window
             SetStatus("HVMC School Launcher voorbereiden...");
             WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
 
-            // Check for a newer launcher before starting the normal authorization flow.
-            // If an update is accepted, the launcher downloads the new executable,
-            // silently replaces itself after this process exits, and starts the new version.
-            SetLoadingText("HVMC launcher controleren...");
-            WriteLauncherLog("Launcher-updatecontrole gestart.");
-            // Launcher update is handled once during App startup; avoid a duplicate network check here.
-            if (!await EnsurePcAuthorizedAsync())
+            // Start the independent release and authorization requests together.
+            // This avoids waiting for GitHub and the account server one after
+            // another; startup now waits only for the slower of the two.
+            SetLoadingText("HVMC launcher en pc-status controleren...");
+            WriteLauncherLog("Launcher-update- en pc-statuscontrole gestart.");
+            var launcherUpdateTask = CheckForLauncherUpdateAsync();
+            var authorizationTask = EnsurePcAuthorizedAsync();
+            var startupChecks = await Task.WhenAll(launcherUpdateTask, authorizationTask);
+
+            if (startupChecks[0])
+                return;
+
+            if (!startupChecks[1])
             {
                 HideLoading();
                 ExitButton.IsEnabled = true;
