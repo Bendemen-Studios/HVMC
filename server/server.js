@@ -206,25 +206,47 @@ function verifyPassword(password) {
     return safeEqual(actual, expected);
   } catch { return false; }
 }
+function getCookie(req, name) {
+  const header = String(req.headers.cookie || '');
+  for (const part of header.split(';')) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name) {
+      try { return decodeURIComponent(value.join('=')); } catch { return value.join('='); }
+    }
+  }
+  return '';
+}
 function getSessionToken(req) {
-  return String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  return bearer || getCookie(req, 'hvmc_admin_session');
 }
 function isAdmin(req) {
   const legacy = String(req.headers['x-admin-token'] || '');
   if (ADMIN_TOKEN && safeEqual(legacy, ADMIN_TOKEN)) return true;
-  const token = getSessionToken(req);
-  if (!token) return false;
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const session = sessions.get(token) || db.prepare('SELECT username,role,expires_at AS expiresAt FROM admin_sessions WHERE token_hash=?').get(tokenHash);
-  if (!session) return false;
-  const expiresAt = typeof session.expiresAt === 'number' ? session.expiresAt : Date.parse(session.expiresAt);
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    sessions.delete(token);
-    db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(tokenHash);
-    return false;
+
+  // Prefer the bearer token when it is valid, but fall back to the persistent
+  // HttpOnly cookie. This keeps /admin and /admin/pcs authenticated when the
+  // browser has an old/stale localStorage token.
+  const candidates = [];
+  const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  const cookieToken = getCookie(req, 'hvmc_admin_session');
+  if (bearer) candidates.push(bearer);
+  if (cookieToken && cookieToken !== bearer) candidates.push(cookieToken);
+
+  for (const token of candidates) {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const session = sessions.get(token) || db.prepare('SELECT username,role,expires_at AS expiresAt FROM admin_sessions WHERE token_hash=?').get(tokenHash);
+    if (!session) continue;
+    const expiresAt = typeof session.expiresAt === 'number' ? session.expiresAt : Date.parse(session.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      sessions.delete(token);
+      db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(tokenHash);
+      continue;
+    }
+    sessions.set(token, { username: session.username, role: session.role, expiresAt });
+    return session.role === 'admin';
   }
-  sessions.set(token, { username: session.username, role: session.role, expiresAt });
-  return session.role === 'admin';
+  return false;
 }
 function requireAdmin(req, res) {
   if (!isAdmin(req)) {
@@ -233,6 +255,10 @@ function requireAdmin(req, res) {
   }
   return true;
 }
+function setAdminSessionCookie(res, token, maxAge) {
+  const secure = 'HttpOnly; Secure; SameSite=Lax; Path=/';
+  res.setHeader('Set-Cookie', `hvmc_admin_session=${encodeURIComponent(token)}; Max-Age=${Math.floor(maxAge / 1000)}; ${secure}`);
+}
 function createAdminSession(res) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + SESSION_TTL_MS;
@@ -240,6 +266,7 @@ function createAdminSession(res) {
   sessions.set(token, { role: 'admin', username: ADMIN_USERNAME, expiresAt });
   db.prepare('INSERT OR REPLACE INTO admin_sessions (token_hash,username,role,expires_at,created_at) VALUES (?,?,?,?,?)')
     .run(tokenHash, ADMIN_USERNAME, 'admin', new Date(expiresAt).toISOString(), new Date().toISOString());
+  setAdminSessionCookie(res, token, SESSION_TTL_MS);
   res.json({ ok: true, token, expiresAt: new Date(expiresAt).toISOString() });
 }
 function normalizeEmail(value) {
@@ -443,6 +470,7 @@ app.post('/v1/admin/logout', (req, res) => {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(tokenHash);
   }
+  res.setHeader('Set-Cookie', 'hvmc_admin_session=; Max-Age=0; HttpOnly; Secure; SameSite=Lax; Path=/');
   res.json({ ok: true });
 });
 app.get('/v1/admin/me', (req, res) => { if (!requireAdmin(req, res)) return; res.json({ authenticated: true, username: ADMIN_USERNAME }); });
