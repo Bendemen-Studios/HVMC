@@ -650,87 +650,76 @@ public partial class MainWindow : Window
         if (!Version.TryParse(LauncherVersion, out var currentVersion))
             return false;
 
-        GitHubRelease? release = null;
+        // Do NOT use api.github.com here. This code runs on every installed
+        // launcher and unauthenticated GitHub REST API calls are rate-limited.
+        // A 403 from the API must never make the launcher update dialog fail.
+        //
+        // version.txt is the release source of truth in this repository. The
+        // release workflow creates the matching vX.Y tag/release and publishes
+        // HVMC.exe under the predictable GitHub release-download URL.
+        Version? remoteVersion = null;
         try
         {
-            // Do not rely solely on /releases/latest. A malformed or incomplete
-            // latest release must not prevent the launcher from finding the
-            // newest usable HVMC.exe in the other published releases.
-            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApi);
-            request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
-            request.Headers.Accept.ParseAdd("application/vnd.github+json");
-            using var response = await _http.SendAsync(request);
-            if (response.IsSuccessStatusCode)
+            using var versionResponse = await _http.GetAsync(
+                "https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/version.txt");
+            if (!versionResponse.IsSuccessStatusCode)
             {
-                var json = await response.Content.ReadAsStringAsync();
-                release = JsonSerializer.Deserialize<GitHubRelease>(json, JsonOptions);
-            }
-        }
-        catch
-        {
-            // Fall back to the releases list below.
-        }
-
-        if (!HasLauncherAsset(release))
-        {
-            try
-            {
-                using var request = new HttpRequestMessage(
-                    HttpMethod.Get,
-                    "https://api.github.com/repos/Bendemen-Studios/HVMC/releases?per_page=20");
-                request.Headers.UserAgent.ParseAdd("HVMC-School-Launcher");
-                request.Headers.Accept.ParseAdd("application/vnd.github+json");
-                using var response = await _http.SendAsync(request);
-                if (response.IsSuccessStatusCode)
-                {
-                    var json = await response.Content.ReadAsStringAsync();
-                    var releases = JsonSerializer.Deserialize<List<GitHubRelease>>(json, JsonOptions) ?? new();
-                    release = releases
-                        .Where(HasLauncherAsset)
-                        .Where(x => Version.TryParse(x.TagName?.Trim().TrimStart('v', 'V'), out _))
-                        .OrderByDescending(x => ParseReleaseVersion(x.TagName))
-                        .FirstOrDefault();
-                }
-            }
-            catch
-            {
+                WriteLauncherLog($"Launcher releasecontrole overgeslagen: version.txt gaf HTTP {(int)versionResponse.StatusCode}.");
                 return false;
             }
+
+            var remoteText = (await versionResponse.Content.ReadAsStringAsync()).Trim();
+            if (!Version.TryParse(remoteText, out var parsedRemoteVersion))
+            {
+                WriteLauncherLog($"Launcher releasecontrole overgeslagen: ongeldige remote versie '{remoteText}'.");
+                return false;
+            }
+
+            remoteVersion = parsedRemoteVersion;
+        }
+        catch (Exception ex)
+        {
+            // An unavailable release check must never block an otherwise
+            // working launcher. The normal content updater has its own check.
+            WriteLauncherLog($"Launcher releasecontrole kon niet worden uitgevoerd: {ex.Message}");
+            return false;
         }
 
-        var tag = release?.TagName?.Trim();
-        if (string.IsNullOrWhiteSpace(tag))
+        if (remoteVersion <= currentVersion)
             return false;
 
-        if (!Version.TryParse(tag.TrimStart('v', 'V'), out var remoteVersion)
-            || remoteVersion <= currentVersion)
-            return false;
+        var tag = $"v{remoteVersion}";
+        var assetUrl = $"https://github.com/Bendemen-Studios/HVMC/releases/download/{tag}/HVMC.exe";
 
-        var asset = release?.Assets?.FirstOrDefault(x =>
-            string.Equals(x.Name, "HVMC.exe", StringComparison.OrdinalIgnoreCase));
-        if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
-            return false;
-
-        // Launcher updates are mandatory and automatic. This is the
-        // bootstrap path for already-installed laptops: they receive the new
-        // HVMC.exe without needing HVMC-Setup.exe or a reinstall.
         SetLoadingText($"Nieuwe HVMC-versie {tag} gevonden. Update wordt gedownload...");
         SetStatus($"HVMC {tag} wordt automatisch bijgewerkt...");
+
         var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
         try
         {
-            using (var dl = await _http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            using (var dl = await _http.GetAsync(assetUrl, HttpCompletionOption.ResponseHeadersRead))
             {
-                dl.EnsureSuccessStatusCode();
+                // The release workflow can bump version.txt before GitHub has
+                // finished publishing the matching release. Treat that short
+                // window as "update not ready yet" instead of showing an error.
+                if (dl.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    WriteLauncherLog($"HVMC {tag} staat nog niet als releasebestand klaar. Update wordt bij de volgende start opnieuw gecontroleerd.");
+                    return false;
+                }
+
+                if (!dl.IsSuccessStatusCode)
+                {
+                    WriteLauncherLog($"HVMC release-download gaf HTTP {(int)dl.StatusCode} {dl.ReasonPhrase}.");
+                    return false;
+                }
+
                 await using var source = await dl.Content.ReadAsStreamAsync();
                 await using var target = File.Create(temp);
                 await source.CopyToAsync(target);
             }
 
             var downloaded = new FileInfo(temp);
-            if (asset.Size > 0 && downloaded.Length != asset.Size)
-                throw new InvalidOperationException("De gedownloade HVMC-launcher heeft een onjuiste bestandsgrootte.");
-
             if (downloaded.Length < 1_000_000)
                 throw new InvalidOperationException("De gedownloade HVMC-launcher lijkt ongeldig of te klein.");
 
@@ -738,10 +727,11 @@ public partial class MainWindow : Window
             ScheduleSilentLauncherReplacement(temp, currentExe);
             return true;
         }
-        catch
+        catch (Exception ex)
         {
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
-            throw;
+            WriteLauncherLog($"Launcher-update van {tag} mislukt: {ex.Message}");
+            throw new InvalidOperationException($"De nieuwe HVMC-launcher kon niet worden gedownload: {ex.Message}", ex);
         }
     }
 
