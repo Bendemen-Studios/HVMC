@@ -171,18 +171,42 @@ public partial class MainWindow : Window
                 ScreenHeight = height
             });
             _minecraftProcess = process;
+            var launchLogPath = Path.Combine(_root, "minecraft-launch.log");
+            Directory.CreateDirectory(_root);
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.StandardOutputEncoding = Encoding.UTF8;
+            process.StartInfo.StandardErrorEncoding = Encoding.UTF8;
             process.EnableRaisingEvents = true;
+
+            using var launchLog = new StreamWriter(launchLogPath, append: false, Encoding.UTF8);
+            process.OutputDataReceived += (_, args) =>
+            {
+                if (args.Data is not null)
+                    try { launchLog.WriteLine(args.Data); launchLog.Flush(); } catch { }
+            };
+            process.ErrorDataReceived += (_, args) =>
+            {
+                if (args.Data is not null)
+                    try { launchLog.WriteLine(args.Data); launchLog.Flush(); } catch { }
+            };
+
             process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
             SetStatus("Minecraft draait.");
             await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
             StartLeaseHeartbeat(_clientId, _deviceToken, _leaseId);
             await process.WaitForExitAsync();
+            var exitCode = process.ExitCode;
 
-            // WaitForExitAsync only waits for the process represented by this
-            // Process object. CmlLib/Java can leave descendants behind briefly,
-            // so give Windows a short moment to finish the shutdown before the
-            // account is offered to another launch.
             await WaitForMinecraftShutdownAsync(process);
+
+            if (exitCode != 0)
+                throw new InvalidOperationException(
+                    $"Minecraft is direct afgesloten (exitcode {exitCode}). Bekijk het logbestand: {launchLogPath}");
+
             process.Close();
             _minecraftProcess = null;
         }
@@ -190,7 +214,14 @@ public partial class MainWindow : Window
         {
             await HandleDeviceBlockedAsync();
         }
-        catch (Exception ex) { if (!_deviceBlocked) { SetStatus("Starten mislukt."); ShowError("Starten mislukt", ex); } }
+        catch (Exception ex)
+        {
+            if (!_deviceBlocked)
+            {
+                SetStatus("Minecraft is gestopt of kon niet starten.");
+                ShowError("Minecraft starten mislukt", ex);
+            }
+        }
         finally
         {
             // Minecraft has returned to the launcher (normally or after a crash).
@@ -202,7 +233,10 @@ public partial class MainWindow : Window
             _playInProgress = false;
             PlayButton.IsEnabled = true;
             ExitButton.IsEnabled = true;
-            if (AuthorizationPanel.Visibility != Visibility.Visible && !_deviceBlocked) SetStatus("Klaar om te spelen.");
+            // Do not overwrite an error status with "Klaar om te spelen".
+            if (AuthorizationPanel.Visibility != Visibility.Visible && !_deviceBlocked
+                && !StatusText.Text.StartsWith("Minecraft is gestopt", StringComparison.OrdinalIgnoreCase))
+                SetStatus("Klaar om te spelen.");
         }
     }
 
