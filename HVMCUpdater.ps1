@@ -85,14 +85,33 @@ function Test-GitBlobSha([string]$FilePath,[string]$ExpectedSha) {
     } catch { return $false }
 }
 function Get-RemoteContentIndex {
-    $headers=Get-GitHubHeaders
-    $ref=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/ref/heads/$Branch" -Headers $headers -TimeoutSec 30
-    $treeSha=[string]$ref.object.sha
-    $tree=Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/git/trees/$treeSha`?recursive=1" -Headers $headers -TimeoutSec 30
-    $files=@($tree.tree | Where-Object { $_.type -eq 'blob' -and $_.path -like 'content/*' } | ForEach-Object {
-        [pscustomobject]@{path=[string]$_.path;sha=[string]$_.sha;download="https://raw.githubusercontent.com/$Repo/$Branch/$($_.path)"}
-    })
-    return [pscustomobject]@{TreeSha=$treeSha;Files=$files}
+    # Do not query the GitHub REST tree API during normal launcher startup.
+    # The tree endpoint is rate-limited and was the source of the 403 errors
+    # seen by clients. A small static index is committed to the repository and
+    # is fetched through raw.githubusercontent.com instead.
+    $indexUrl="https://raw.githubusercontent.com/$Repo/$Branch/content-index.json"
+    $lastError=$null
+    for($attempt=1; $attempt -le 3; $attempt++){
+        try {
+            $response=Invoke-WebRequest -Uri $indexUrl -Headers @{'User-Agent'='HVMC-School-Launcher'} -UseBasicParsing -TimeoutSec 30
+            $index=$response.Content | ConvertFrom-Json
+            if($null -eq $index.files -or @($index.files).Count -eq 0){ throw 'GitHub content-index.json bevat geen bestanden.' }
+            $files=@($index.files | ForEach-Object {
+                $path=[string]$_.path
+                if($path -notlike 'content/*'){ throw "Ongeldig content-index pad: $path" }
+                [pscustomobject]@{
+                    path=$path
+                    sha=[string]$_.sha
+                    download="https://raw.githubusercontent.com/$Repo/$Branch/$path"
+                }
+            })
+            return [pscustomobject]@{TreeSha=[string]$index.treeSha;Files=$files}
+        } catch {
+            $lastError=$_.Exception.Message
+            if($attempt -lt 3){ Start-Sleep -Seconds ([Math]::Min(2*$attempt,5)) }
+        }
+    }
+    throw "GitHub content-index kon niet worden geladen: $lastError"
 }
 
 $syncStarted = $false
