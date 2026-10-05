@@ -124,10 +124,51 @@ jobs:
           }
           git commit -m "Auto-bump launcher minor version [no-release]"
 
-          git push origin HEAD:main
-          if ($LASTEXITCODE -ne 0) {
-            throw "Automatische versiecommit kon niet naar main worden gepusht."
+          # main kan tijdens deze run al door een andere workflow-run zijn
+          # bijgewerkt. Werk daarom eerst de remote stand bij en plaats onze
+          # versiecommit daarop. Alleen version.txt wordt meegenomen.
+          git fetch origin main
+          $remoteVersion = (git show 'origin/main:version.txt').Trim()
+          $localVersion = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+
+          if ($remoteVersion -eq $localVersion) {
+            git reset --hard origin/main
+            Write-Host "Remote main bevat versie $remoteVersion al. Deze versiecommit hoeft niet opnieuw te worden gepusht."
+            "RELEASE_VERSION=$remoteVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            exit 0
           }
+
+          $localParts = $localVersion.Split('.')
+          $remoteParts = $remoteVersion.Split('.')
+          if ($localParts.Count -ne 2 -or $remoteParts.Count -ne 2) {
+            throw "Ongeldige versie aangetroffen tijdens synchronisatie: lokaal=$localVersion, remote=$remoteVersion."
+          }
+
+          $localMajor = [int]$localParts[0]
+          $localMinor = [int]$localParts[1]
+          $remoteMajor = [int]$remoteParts[0]
+          $remoteMinor = [int]$remoteParts[1]
+
+          if ($remoteMajor -gt $localMajor -or
+              ($remoteMajor -eq $localMajor -and $remoteMinor -gt $localMinor)) {
+            Write-Host "Remote main loopt voor met versie $remoteVersion. Lokale bump wordt opnieuw toegepast op remote main."
+            git reset --hard origin/main
+            Set-Content -LiteralPath 'version.txt' -Value $localVersion -NoNewline
+            git add version.txt
+            git commit -m "Auto-bump launcher minor version [no-release]"
+
+            git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) {
+              throw "Automatische versiecommit kon niet naar main worden gepusht na synchronisatie."
+            }
+          }
+          else {
+            git push origin HEAD:main
+            if ($LASTEXITCODE -ne 0) {
+              throw "Automatische versiecommit kon niet naar main worden gepusht."
+            }
+          }
+
           Write-Host "Automatische versiecommit naar main gepusht."
 
       - name: Prepare launcher icon
