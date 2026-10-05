@@ -111,6 +111,15 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        // The release workflow uses major.minor versions (for example 3.57).
+        // App.AppVersion is the assembly version (for example 3.57.0), so show
+        // the actual release number without the implicit .0 build component.
+        if (Version.TryParse(App.AppVersion, out var releaseVersion))
+            VersionText.Text = $"Versie: v{releaseVersion.Major}.{releaseVersion.Minor}";
+        else
+            VersionText.Text = $"Versie: v{App.AppVersion}";
+
         Directory.CreateDirectory(_root);
         WriteLauncherLog("Launcher gestart.");
         Loaded += MainWindow_Loaded;
