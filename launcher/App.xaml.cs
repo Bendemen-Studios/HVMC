@@ -73,12 +73,17 @@ public partial class App : System.Windows.Application
             // Do not block the first WPF frame on a network release check.
             // MainWindow performs the launcher update check once it is visible.
 
-            RegisterWindowsApp();
-            CreateShortcuts();
-
+            // Show the launcher immediately. Registry/shortcut maintenance is
+            // non-critical work and must not delay the first visible frame.
             var window = new MainWindow();
             MainWindow = window;
             window.Show();
+
+            _ = Task.Run(() =>
+            {
+                try { RegisterWindowsApp(); } catch { }
+                try { CreateShortcuts(); } catch { }
+            });
         }
         catch (Exception ex)
         {
