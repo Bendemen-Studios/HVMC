@@ -30,7 +30,7 @@ public partial class App : System.Windows.Application
         "Bendemen", "HVMC");
 
     private static readonly string InstallDir = Path.Combine(Root, "App");
-    private static readonly string InstalledExe = Path.Combine(InstallDir, "HVMCLauncher.exe");
+    private static readonly string InstalledExe = Path.Combine(InstallDir, "HVMC.exe");
 
     private async void Application_Startup(object sender, StartupEventArgs e)
     {
@@ -251,12 +251,12 @@ public partial class App : System.Windows.Application
             var asset = release.Assets?
                 .FirstOrDefault(x => string.Equals(
                     x.Name,
-                    "HVMCLauncher.exe",
+                    "HVMC.exe",
                     StringComparison.OrdinalIgnoreCase));
 
             if (asset is null || string.IsNullOrWhiteSpace(asset.BrowserDownloadUrl))
                 throw new InvalidOperationException(
-                    $"HVMC {release.TagName} is beschikbaar, maar bevat geen HVMCLauncher.exe.");
+                    $"HVMC {release.TagName} is beschikbaar, maar bevat geen HVMC.exe.");
 
             var tempPath = Path.Combine(
                 Root,
