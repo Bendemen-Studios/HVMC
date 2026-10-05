@@ -140,7 +140,7 @@ public partial class MainWindow : Window
             // silently replaces itself after this process exits, and starts the new version.
             SetLoadingText("HVMC launcher controleren...");
             WriteLauncherLog("Launcher-updatecontrole gestart.");
-            await CheckForLauncherUpdateAsync();
+            // Launcher update is handled once during App startup; avoid a duplicate network check here.
             if (!await EnsurePcAuthorizedAsync())
             {
                 HideLoading();
