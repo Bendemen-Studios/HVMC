@@ -105,36 +105,29 @@ CREATE TABLE IF NOT EXISTS pool_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS link_attempts (
-  attempt_id TEXT PRIMARY KEY,
-  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  device_code_enc TEXT NOT NULL,
-  interval_seconds INTEGER NOT NULL DEFAULT 5,
-  next_poll_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_link_attempts_expiry ON link_attempts(expires_at);
+// Device-login attempts are temporary. Migrate any older link_attempts
+// schema before creating indexes, because an old table may not have expires_at.
+const requiredLinkAttemptColumns = ['attempt_id','account_id','device_code_enc','interval_seconds','next_poll_at','expires_at','created_at'];
+const existingLinkAttemptColumns = db.prepare('PRAGMA table_info(link_attempts)').all().map(row => row.name);
+const linkAttemptsNeedsMigration = existingLinkAttemptColumns.length > 0 &&
+  requiredLinkAttemptColumns.some(column => !existingLinkAttemptColumns.includes(column));
 
-// Older pool databases may already contain a link_attempts table with a
-// different schema. Device-login attempts are temporary, so safely recreate
-// that table when the required attempt_id column is missing.
-const linkAttemptsColumns = db.prepare('PRAGMA table_info(link_attempts)').all().map(row => row.name);
-if (linkAttemptsColumns.length && !linkAttemptsColumns.includes('attempt_id')) {
+if (linkAttemptsNeedsMigration) {
   db.exec('DROP TABLE IF EXISTS link_attempts');
-  db.exec(`
-    CREATE TABLE link_attempts (
-      attempt_id TEXT PRIMARY KEY,
-      account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-      device_code_enc TEXT NOT NULL,
-      interval_seconds INTEGER NOT NULL DEFAULT 5,
-      next_poll_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_link_attempts_expiry ON link_attempts(expires_at);
-  `);
 }
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS link_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    device_code_enc TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL DEFAULT 5,
+    next_poll_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_link_attempts_expiry ON link_attempts(expires_at);
+`);
 `);
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_username TEXT'); } catch {}
 try { db.exec('ALTER TABLE accounts ADD COLUMN microsoft_refresh_token_enc TEXT'); } catch {}
