@@ -117,12 +117,6 @@ function Test-GitHubOfflineError($Exception) {
 
 try {
     Log 'HVMC School Launcher updater gestart.'
-    $versionResponse=Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-School-Launcher'} -UseBasicParsing -TimeoutSec 20
-    $remoteVersion=([string]$versionResponse.Content).Trim()
-    if([string]::IsNullOrWhiteSpace($remoteVersion)){throw 'version.txt is leeg.'}
-    Log "Beschikbare HVMC versie: $remoteVersion"
-    Log "HVMC runtime wordt als content geleverd: Minecraft $McVersion / Fabric $FabricLoader"
-
     function Update-LauncherIfNeeded {
         if([string]::IsNullOrWhiteSpace($LauncherPath) -or
            [string]::IsNullOrWhiteSpace($LauncherVersion) -or
@@ -213,6 +207,15 @@ exit 1
         Log "Oude launcher wordt nu afgesloten zodat de nieuwe launcher kan worden geplaatst."
         exit 10
     }
+
+    # Launcher-updates staan bewust vóór de content-sync. Daardoor kan een
+    # nieuwe launcher worden opgehaald zonder eerst de volledige Minecraft
+    # content te controleren of opnieuw te downloaden.
+    $versionResponse=Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-School-Launcher'} -UseBasicParsing -TimeoutSec 20
+    $remoteVersion=([string]$versionResponse.Content).Trim()
+    if([string]::IsNullOrWhiteSpace($remoteVersion)){throw 'version.txt is leeg.'}
+    Log "Beschikbare HVMC versie: $remoteVersion"
+    Log "HVMC runtime wordt als content geleverd: Minecraft $McVersion / Fabric $FabricLoader"
 
     $state=ReadJson $StatePath
     if($ForceRedownload){
