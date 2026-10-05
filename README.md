@@ -64,32 +64,32 @@ Mail then to info@bendemen.nl
 ### (Upcoming) Features
 
 **Launcher OS Compat**
-✅ Windows Launcher
-⭕ Linux Launcher
-⭕ Apple Launcher
+- ✅ Windows Launcher
+- ⭕ Linux Launcher
+- ⭕ Apple Launcher
 
 **Launcher Features**
-✅ Automatic Updates
-✅ Automatic Searching for free Accounts
-✅ Skips a account when it is errored or taken
-✅ Easy to use Launcher
-✅ Easy readable errors
-✅ Automatic Adjustment on Graphics
-✅ HVMC Theming
-✅ Favicon
-⭕ English Language
-⭕ Language Chooser/Switcher
+- ✅ Automatic Updates
+- ✅ Automatic Searching for free Accounts
+- ✅ Skips a account when it is errored or taken
+- ✅ Easy to use Launcher
+- ✅ Easy readable errors
+- ✅ Automatic Adjustment on Graphics
+- ✅ HVMC Theming
+- ✅ App Icon
+- ⭕ English Language
+- ⭕ Language Chooser/Switcher
 
 
 **Minecraft Updates**
-✅ Minecraft Version 26.2
-⭕ Minecraft Version 26.3
+- ✅ Minecraft Version 26.2
+- ⭕ Minecraft Version 26.3
 
 **Site/Pool Server Features**
-✅ Minecraft Account Pool
-✅ Automatic Account Assignment
-✅ HVMC Theming
-✅ Favicon
-✅ 2FA Login
-✅ Automatic Mailing
-⭕ Mail Theming
+- ✅ Minecraft Account Pool
+- ✅ Automatic Account Assignment
+- ✅ HVMC Theming
+- ✅ Favicon
+- ✅ 2FA Login
+- ✅ Automatic Mailing
+- ⭕ Mail Theming
