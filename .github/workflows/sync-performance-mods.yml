@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'content/**'
-      - 'content-index.json'
       - '.github/workflows/sync-performance-mods.yml'
   workflow_dispatch:
 
@@ -24,13 +23,13 @@ jobs:
       - name: Build content index
         shell: python
         env:
-          TREE_SHA: ${{ github.sha }}
         run: |
           import hashlib
           import json
           import os
           import subprocess
 
+          tree_sha = subprocess.check_output(["git", "rev-parse", "HEAD:content"], text=True).strip()
           files = []
           for root, _, names in os.walk("content"):
               for name in names:
@@ -47,7 +46,7 @@ jobs:
           with open("content-index.json", "w", encoding="utf-8", newline="\n") as handle:
               json.dump({
                   "version": "generated",
-                  "treeSha": os.environ["TREE_SHA"],
+                  "treeSha": tree_sha,
                   "files": files
               }, handle, indent=2)
               handle.write("\n")
