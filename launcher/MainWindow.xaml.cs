@@ -932,13 +932,48 @@ public partial class MainWindow : Window
             ? "HVMC-bestanden opnieuw downloaden..."
             : "HVMC-bestanden controleren en bijwerken...");
         var updater = Path.Combine(_root, "HVMCUpdater.ps1");
-        var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-        var resourceName = assembly.GetManifestResourceNames().FirstOrDefault(x => x.EndsWith("HVMCUpdater.ps1", StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(resourceName)) throw new InvalidOperationException("De ingebouwde HVMC updater ontbreekt in deze launcher-build.");
-        await using (var resource = assembly.GetManifestResourceStream(resourceName) ?? throw new InvalidOperationException("De ingebouwde HVMC updater kon niet worden geopend."))
-        await using (var target = File.Create(updater))
+
+        // Always prefer the current updater from GitHub. The updater is also
+        // embedded in the launcher as an offline fallback, but an older
+        // installed launcher must not keep executing a broken/stale updater
+        // forever. This is intentionally done before PowerShell is started.
+        var remoteUpdaterUrl = "https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/HVMCUpdater.ps1";
+        var updaterRefreshed = false;
+        try
         {
-            await resource.CopyToAsync(target);
+            using var response = await _http.GetAsync(remoteUpdaterUrl);
+            response.EnsureSuccessStatusCode();
+            var remoteUpdater = await response.Content.ReadAsStringAsync();
+
+            if (remoteUpdater.Contains("param([switch]$ForceRedownload", StringComparison.Ordinal) &&
+                remoteUpdater.Contains("HVMC updater afgerond.", StringComparison.Ordinal) &&
+                remoteUpdater.Contains("Update-LauncherIfNeeded", StringComparison.Ordinal))
+            {
+                await File.WriteAllTextAsync(updater, remoteUpdater, new UTF8Encoding(false));
+                updaterRefreshed = true;
+                WriteLauncherLog("Actuele HVMCUpdater.ps1 vanaf GitHub opgehaald.");
+            }
+            else
+            {
+                WriteLauncherLog("GitHub updater werd geweigerd omdat de inhoud niet herkenbaar geldig is.");
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteLauncherLog($"Actuele HVMCUpdater.ps1 kon niet worden opgehaald; ingebouwde updater wordt gebruikt: {ex.Message}");
+        }
+
+        if (!updaterRefreshed)
+        {
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var resourceName = assembly.GetManifestResourceNames().FirstOrDefault(x => x.EndsWith("HVMCUpdater.ps1", StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(resourceName)) throw new InvalidOperationException("De ingebouwde HVMC updater ontbreekt in deze launcher-build.");
+            await using (var resource = assembly.GetManifestResourceStream(resourceName) ?? throw new InvalidOperationException("De ingebouwde HVMC updater kon niet worden geopend."))
+            await using (var target = File.Create(updater))
+            {
+                await resource.CopyToAsync(target);
+            }
+            WriteLauncherLog("Ingebouwde HVMCUpdater.ps1 gebruikt.");
         }
         var startInfo = new ProcessStartInfo
         {
