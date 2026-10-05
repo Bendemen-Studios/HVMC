@@ -48,7 +48,8 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         PlayButton.IsEnabled = false;
-        ExitButton.IsEnabled = true;
+        ExitButton.IsEnabled = false;
+        ShowLoading("Controleren op updates...");
         try
         {
             _clientId = GetStableClientId();
@@ -58,10 +59,12 @@ public partial class MainWindow : Window
             // Check for a newer launcher before starting the normal authorization flow.
             // If an update is accepted, the launcher downloads the new executable,
             // silently replaces itself after this process exits, and starts the new version.
+            SetLoadingText("HVMC launcher controleren...");
             await CheckForLauncherUpdateAsync();
             if (!await EnsurePcAuthorizedAsync()) return;
             await SendPcHeartbeatAsync();
             StartPcHeartbeat();
+            HideLoading();
             SetStatus("Klaar om te spelen.");
             PlayButton.IsEnabled = true;
         }
@@ -71,6 +74,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            HideLoading();
             SetStatus("Controle mislukt.");
             ShowError("Controle mislukt", ex);
             ExitButton.IsEnabled = true;
@@ -430,6 +434,26 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ShowLoading(string message)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            LoadingText.Text = message;
+            LoadingOverlay.Visibility = Visibility.Visible;
+            PlayButton.IsEnabled = false;
+        });
+    }
+
+    private void SetLoadingText(string message)
+    {
+        Dispatcher.Invoke(() => LoadingText.Text = message);
+    }
+
+    private void HideLoading()
+    {
+        Dispatcher.Invoke(() => LoadingOverlay.Visibility = Visibility.Collapsed);
+    }
+
     private async Task<bool> CheckForLauncherUpdateAsync()
     {
         var currentExe = Environment.ProcessPath;
@@ -505,16 +529,8 @@ public partial class MainWindow : Window
             return false;
         }
 
-        SetStatus($"Nieuwe HVMC-update {tag} beschikbaar.");
-        var choice = ShowLauncherUpdatePrompt(currentVersion, remoteVersion);
-        if (choice != LauncherUpdateChoice.Update)
-        {
-            SaveLauncherUpdateDeferred(remoteVersion);
-            SetStatus($"Update {tag} uitgesteld voor 24 uur.");
-            return false;
-        }
-
-        SetStatus($"HVMC {tag} wordt op de achtergrond gedownload...");
+        SetLoadingText($"Nieuwe HVMC-versie {tag} gevonden. Update wordt gedownload...");
+        SetStatus($"HVMC {tag} wordt automatisch bijgewerkt...");
         var temp = Path.Combine(_root, $"HVMCLauncher-update-{Guid.NewGuid():N}.exe");
         try
         {
@@ -727,6 +743,9 @@ public partial class MainWindow : Window
 
     private async Task RunUpdaterAsync(bool forceRedownload = false)
     {
+        ShowLoading(forceRedownload
+            ? "HVMC-bestanden opnieuw downloaden..."
+            : "HVMC-bestanden controleren en bijwerken...");
         var updater = Path.Combine(_root, "HVMCUpdater.ps1");
         var assembly = System.Reflection.Assembly.GetExecutingAssembly();
         var resourceName = assembly.GetManifestResourceNames().FirstOrDefault(x => x.EndsWith("HVMCUpdater.ps1", StringComparison.OrdinalIgnoreCase));
