@@ -479,3 +479,350 @@ exit 1
     }
     exit 1
 } finally {Log 'HVMC updater afgerond.'}
+
+                } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Release = $_
+                        Version = [version](([string]$_.tag_name).Trim().TrimStart('v','V'))
+                    }
+                } |
+                Where-Object { $_.Version -gt $currentVersion } |
+                Sort-Object Version -Descending |
+                Select-Object -First 1
+
+            if($null -eq $candidate){ return $false }
+
+            $asset = @($candidate.Release.assets) |
+                Where-Object { $_.name -ieq 'HVMC.exe' } |
+                Select-Object -First 1
+            if($null -eq $asset){ return $false }
+
+            Log "Nieuwe launcher gevonden: $($candidate.Release.tag_name)"
+            $launcherTemp = Join-Path $Root ("HVMC-launcher-{0}.exe" -f ([guid]::NewGuid().ToString('N')))
+            Download ([string]$asset.browser_download_url) $launcherTemp
+
+            $downloaded = Get-Item -LiteralPath $launcherTemp
+            if($asset.size -gt 0 -and $downloaded.Length -ne [int64]$asset.size){
+                throw "Gedownloade launcher heeft een onjuiste bestandsgrootte."
+            }
+            if($downloaded.Length -lt 1000000){
+                throw "Gedownloade launcher lijkt ongeldig of te klein."
+            }
+
+            $sourcePath = $launcherTemp
+            $targetPath = $LauncherPath
+            $replaceScript = @'
+param([int]$LauncherPid,[string]$SourcePath,[string]$TargetPath)
+
+Start-Sleep -Milliseconds 800
+while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 200
+}
+for ($attempt = 1; $attempt -le 30; $attempt++) {
+    try {
+        Move-Item -LiteralPath $SourcePath -Destination $TargetPath -Force -ErrorAction Stop
+        Start-Process -FilePath $TargetPath
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+Remove-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
+exit 1
+'@
+            $replacePath = Join-Path $Root ("HVMC-launcher-replace-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+            Set-Content -LiteralPath $replacePath -Value $replaceScript -Encoding UTF8
+
+            Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+                '-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+                '-ExecutionPolicy','Bypass','-File',$replacePath,
+                '-LauncherPid',$LauncherPid.ToString(),
+                '-SourcePath',$sourcePath,
+                '-TargetPath',$targetPath
+            ) -WindowStyle Hidden | Out-Null
+
+            Log "Launcher-update ingepland: $($candidate.Release.tag_name)"
+            return $true
+        } catch {
+            Log "Launcher zelf bijwerken mislukt: $($_.Exception.Message)"
+            return $false
+        }
+    }
+
+    if(Update-LauncherIfNeeded){
+        Log "Oude launcher wordt nu afgesloten zodat de nieuwe launcher kan worden geplaatst."
+        exit 10
+    }
+
+    # Launcher-updates staan bewust vóór de content-sync. Daardoor kan een
+    # nieuwe launcher worden opgehaald zonder eerst de volledige Minecraft
+    # content te controleren of opnieuw te downloaden.
+    $versionResponse=Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$Repo/$Branch/version.txt" -Headers @{'User-Agent'='HVMC-School-Launcher'} -UseBasicParsing -TimeoutSec 20
+    $remoteVersion=([string]$versionResponse.Content).Trim()
+    if([string]::IsNullOrWhiteSpace($remoteVersion)){throw 'version.txt is leeg.'}
+    Log "Beschikbare HVMC versie: $remoteVersion"
+    Log "HVMC runtime wordt als content geleverd: Minecraft $McVersion / Fabric $FabricLoader"
+
+    $state=ReadJson $StatePath
+    if($ForceRedownload){
+        Log 'Handmatige herdownload aangevraagd. Bestaande HVMC-manifest wordt genegeerd.'
+        $state=$null
+        $oldManifest=$null
+    }
+    $installedVersion=if($state){[string]$state.installedVersion}else{''}
+    $oldManifest=ReadJson $ManifestPath
+    $oldEntries=@{}
+    if($oldManifest -and $oldManifest.files){foreach($entry in @($oldManifest.files)){$oldEntries[[string]$entry.path]=[string]$entry.sha}}
+
+    # First compare the Git tree SHA. If the remote content tree has not changed
+    # since the last successful sync, skip the expensive recursive tree/hash pass.
+    $remoteIndex=Get-RemoteContentIndex
+    $remoteTreeSha=[string]$remoteIndex.TreeSha
+    $remoteFiles=@($remoteIndex.Files)
+    if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
+
+    # From this point onward we have a valid GitHub content index. If GitHub
+    # disappears during the actual sync, do NOT allow Minecraft to start with
+    # partially updated content.
+    $syncStarted = $true
+
+    $missingLocal=@($oldEntries.Keys | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $MinecraftDir (Safe $_)))
+    })
+    $fastPath=(
+        -not [string]::IsNullOrWhiteSpace([string]$state.remoteTreeSha) -and
+        [string]$state.remoteTreeSha -eq $remoteTreeSha -and
+        $oldEntries.Count -gt 0 -and
+        $missingLocal.Count -eq 0 -and
+        (Test-Path -LiteralPath $fabricJson)
+    )
+
+    if($fastPath){
+        Log "Geen contentwijzigingen gevonden. Snelle sync: bestaande HVMC-content wordt hergebruikt."
+        SaveJson ([pscustomobject]@{
+            installedVersion=$remoteVersion
+            remoteTreeSha=$remoteTreeSha
+            updated=(Get-Date).ToUniversalTime().ToString('o')
+        }) $StatePath
+        Log "HVMC content synchronisatie overgeslagen; alles is al actueel."
+        exit 0
+    }
+
+    Log "Nieuwe of gewijzigde HVMC-content gevonden. Bestanden controleren..."
+    $newManifest=@{}
+    $downloadQueue=@()
+
+    foreach($file in $remoteFiles){
+        $relative=Safe ([string]$file.path).Substring(8)
+        $destination=Join-Path $MinecraftDir $relative
+        $expectedSha=[string]$file.sha
+
+        # If our previous manifest already knows this exact Git blob and the file exists,
+        # trust the manifest instead of re-reading and hashing the whole file.
+        # The remote tree SHA already proved that this content has not changed upstream.
+        $manifestMatch=($oldEntries.ContainsKey($relative) -and [string]$oldEntries[$relative] -eq $expectedSha)
+        if(-not(Test-Path -LiteralPath $destination)){
+            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download}
+        } elseif(-not $manifestMatch -and -not(Test-GitBlobSha $destination $expectedSha)){
+            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download}
+        }
+        $newManifest[$relative]=$expectedSha
+    }
+
+    if($downloadQueue.Count -gt 0){
+        Log "Te downloaden bestanden: $($downloadQueue.Count). Parallelle downloads worden gebruikt."
+        DownloadBatch $downloadQueue 6
+    } else {
+        Log "Alle bestaande bestanden komen overeen met de HVMC-manifestgegevens."
+    }
+
+    foreach($oldPath in @($oldEntries.Keys)){if(-not $newManifest.ContainsKey($oldPath)){$obsolete=Join-Path $MinecraftDir (Safe $oldPath);if(Test-Path -LiteralPath $obsolete){Remove-Item -LiteralPath $obsolete -Force}}}
+    $manifestFiles=foreach($key in ($newManifest.Keys|Sort-Object)){[pscustomobject]@{path=$key;sha=$newManifest[$key]}}
+    SaveJson ([pscustomobject]@{version=$remoteVersion;files=@($manifestFiles);updated=(Get-Date).ToUniversalTime().ToString('o')}) $ManifestPath
+    SaveJson ([pscustomobject]@{installedVersion=$remoteVersion;remoteTreeSha=$remoteTreeSha;updated=(Get-Date).ToUniversalTime().ToString('o')}) $StatePath
+
+    if(-not(Test-Path -LiteralPath $fabricJson)){
+        throw "Gebundelde Fabric-installatie ontbreekt: content/versions/$FabricProfile/$FabricProfile.json"
+    }
+    Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
+
+    Log "HVMC content + gebundelde Fabric-runtime synchronisatie voltooid."
+    exit 0
+} catch {
+    Log "Updater mislukt: $($_.Exception.Message)"
+    if(-not $syncStarted -and (Test-GitHubOfflineError $_.Exception)){
+        Log 'GitHub is tijdelijk niet bereikbaar. Bestaande lokale HVMC-content mag worden gebruikt.'
+        exit 2
+    }
+    exit 1
+} finally {Log 'HVMC updater afgerond.'}
+
+                } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Release = $_
+                        Version = [version](([string]$_.tag_name).Trim().TrimStart('v','V'))
+                    }
+                } |
+                Where-Object { $_.Version -gt $currentVersion } |
+                Sort-Object Version -Descending |
+                Select-Object -First 1
+
+            if($null -eq $candidate){ return $false }
+
+            $asset = @($candidate.Release.assets) |
+                Where-Object { $_.name -ieq 'HVMC.exe' } |
+                Select-Object -First 1
+            if($null -eq $asset){ return $false }
+
+            Log "Nieuwe launcher gevonden: $($candidate.Release.tag_name)"
+            $launcherTemp = Join-Path $Root ("HVMC-launcher-{0}.exe" -f ([guid]::NewGuid().ToString('N')))
+            Download ([string]$asset.browser_download_url) $launcherTemp
+
+            $downloaded = Get-Item -LiteralPath $launcherTemp
+            if($asset.size -gt 0 -and $downloaded.Length -ne [int64]$asset.size){
+                throw "Gedownloade launcher heeft een onjuiste bestandsgrootte."
+            }
+            if($downloaded.Length -lt 1000000){
+                throw "Gedownloade launcher lijkt ongeldig of te klein."
+            }
+
+            $sourcePath = $launcherTemp
+            $targetPath = $LauncherPath
+            $replaceScript = @'
+param([int]$LauncherPid,[string]$SourcePath,[string]$TargetPath)
+
+Start-Sleep -Milliseconds 800
+while (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 200
+}
+for ($attempt = 1; $attempt -le 30; $attempt++) {
+    try {
+        Move-Item -LiteralPath $SourcePath -Destination $TargetPath -Force -ErrorAction Stop
+        Start-Process -FilePath $TargetPath
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+Remove-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue
+exit 1
+'@
+            $replacePath = Join-Path $Root ("HVMC-launcher-replace-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+            Set-Content -LiteralPath $replacePath -Value $replaceScript -Encoding UTF8
+
+            Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+                '-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+                '-ExecutionPolicy','Bypass','-File',$replacePath,
+                '-LauncherPid',$LauncherPid.ToString(),
+                '-SourcePath',$sourcePath,
+                '-TargetPath',$targetPath
+            ) -WindowStyle Hidden | Out-Null
+
+            Log "Launcher-update ingepland: $($candidate.Release.tag_name)"
+            return $true
+        } catch {
+            Log "Launcher zelf bijwerken mislukt: $($_.Exception.Message)"
+            return $false
+        }
+    }
+
+    if(Update-LauncherIfNeeded){
+        Log "Oude launcher wordt nu afgesloten zodat de nieuwe launcher kan worden geplaatst."
+        exit 10
+    }
+
+    $state=ReadJson $StatePath
+    if($ForceRedownload){
+        Log 'Handmatige herdownload aangevraagd. Bestaande HVMC-manifest wordt genegeerd.'
+        $state=$null
+        $oldManifest=$null
+    }
+    $installedVersion=if($state){[string]$state.installedVersion}else{''}
+    $oldManifest=ReadJson $ManifestPath
+    $oldEntries=@{}
+    if($oldManifest -and $oldManifest.files){foreach($entry in @($oldManifest.files)){$oldEntries[[string]$entry.path]=[string]$entry.sha}}
+
+    # First compare the Git tree SHA. If the remote content tree has not changed
+    # since the last successful sync, skip the expensive recursive tree/hash pass.
+    $remoteIndex=Get-RemoteContentIndex
+    $remoteTreeSha=[string]$remoteIndex.TreeSha
+    $remoteFiles=@($remoteIndex.Files)
+    if($remoteFiles.Count -eq 0){throw 'Geen HVMC content gevonden in content/. Upload de volledige Fabric-runtime onder content/ voordat deze launcher wordt gebruikt.'}
+
+    # From this point onward we have a valid GitHub content index. If GitHub
+    # disappears during the actual sync, do NOT allow Minecraft to start with
+    # partially updated content.
+    $syncStarted = $true
+
+    $missingLocal=@($oldEntries.Keys | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $MinecraftDir (Safe $_)))
+    })
+    $fastPath=(
+        -not [string]::IsNullOrWhiteSpace([string]$state.remoteTreeSha) -and
+        [string]$state.remoteTreeSha -eq $remoteTreeSha -and
+        $oldEntries.Count -gt 0 -and
+        $missingLocal.Count -eq 0 -and
+        (Test-Path -LiteralPath $fabricJson)
+    )
+
+    if($fastPath){
+        Log "Geen contentwijzigingen gevonden. Snelle sync: bestaande HVMC-content wordt hergebruikt."
+        SaveJson ([pscustomobject]@{
+            installedVersion=$remoteVersion
+            remoteTreeSha=$remoteTreeSha
+            updated=(Get-Date).ToUniversalTime().ToString('o')
+        }) $StatePath
+        Log "HVMC content synchronisatie overgeslagen; alles is al actueel."
+        exit 0
+    }
+
+    Log "Nieuwe of gewijzigde HVMC-content gevonden. Bestanden controleren..."
+    $newManifest=@{}
+    $downloadQueue=@()
+
+    foreach($file in $remoteFiles){
+        $relative=Safe ([string]$file.path).Substring(8)
+        $destination=Join-Path $MinecraftDir $relative
+        $expectedSha=[string]$file.sha
+
+        # If our previous manifest already knows this exact Git blob and the file exists,
+        # trust the manifest instead of re-reading and hashing the whole file.
+        # The remote tree SHA already proved that this content has not changed upstream.
+        $manifestMatch=($oldEntries.ContainsKey($relative) -and [string]$oldEntries[$relative] -eq $expectedSha)
+        if(-not(Test-Path -LiteralPath $destination)){
+            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download}
+        } elseif(-not $manifestMatch -and -not(Test-GitBlobSha $destination $expectedSha)){
+            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download}
+        }
+        $newManifest[$relative]=$expectedSha
+    }
+
+    if($downloadQueue.Count -gt 0){
+        Log "Te downloaden bestanden: $($downloadQueue.Count). Parallelle downloads worden gebruikt."
+        DownloadBatch $downloadQueue 6
+    } else {
+        Log "Alle bestaande bestanden komen overeen met de HVMC-manifestgegevens."
+    }
+
+    foreach($oldPath in @($oldEntries.Keys)){if(-not $newManifest.ContainsKey($oldPath)){$obsolete=Join-Path $MinecraftDir (Safe $oldPath);if(Test-Path -LiteralPath $obsolete){Remove-Item -LiteralPath $obsolete -Force}}}
+    $manifestFiles=foreach($key in ($newManifest.Keys|Sort-Object)){[pscustomobject]@{path=$key;sha=$newManifest[$key]}}
+    SaveJson ([pscustomobject]@{version=$remoteVersion;files=@($manifestFiles);updated=(Get-Date).ToUniversalTime().ToString('o')}) $ManifestPath
+    SaveJson ([pscustomobject]@{installedVersion=$remoteVersion;remoteTreeSha=$remoteTreeSha;updated=(Get-Date).ToUniversalTime().ToString('o')}) $StatePath
+
+    if(-not(Test-Path -LiteralPath $fabricJson)){
+        throw "Gebundelde Fabric-installatie ontbreekt: content/versions/$FabricProfile/$FabricProfile.json"
+    }
+    Log "Gebundelde Fabric $FabricLoader voor Minecraft $McVersion is aanwezig."
+
+    Log "HVMC content + gebundelde Fabric-runtime synchronisatie voltooid."
+    exit 0
+} catch {
+    Log "Updater mislukt: $($_.Exception.Message)"
+    if(-not $syncStarted -and (Test-GitHubOfflineError $_.Exception)){
+        Log 'GitHub is tijdelijk niet bereikbaar. Bestaande lokale HVMC-content mag worden gebruikt.'
+        exit 2
+    }
+    exit 1
+} finally {Log 'HVMC updater afgerond.'}
