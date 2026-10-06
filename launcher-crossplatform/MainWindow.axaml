@@ -3,7 +3,7 @@
         x:Class="HVMCLauncher.CrossPlatform.MainWindow"
         Title="HVMC School Launcher"
         Width="520" Height="650" MinWidth="460" MinHeight="580"
-        WindowStartupLocation="Center" CanResize="False"
+        CanResize="False"
         Background="#F7F4EC" Foreground="#27241E">
   <Grid RowDefinitions="*,Auto,*,Auto" Margin="42">
     <StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center">
