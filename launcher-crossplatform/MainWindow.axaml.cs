@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private readonly AccountPoolClient _accounts;
     private readonly ContentSyncService _content;
     private readonly MinecraftService _minecraft;
+    private readonly LauncherUpdateService _updates;
     private Process? _minecraftProcess;
     private bool _playing;
     private bool _blocked;
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
         _accounts = new AccountPoolClient(_http, _log);
         _content = new ContentSyncService(_http, _log);
         _minecraft = new MinecraftService(_http, _log);
+        _updates = new LauncherUpdateService(_http, _log);
 
         VersionText.Text = $"Versie: v{App.AppVersion}";
         Opened += async (_, _) => await InitializeAsync();
@@ -55,6 +57,7 @@ public partial class MainWindow : Window
             PlayButton.IsEnabled = true;
             _accounts.StartPcHeartbeat();
             SetStatus("Klaar om te spelen.");
+            _ = CheckForUpdateDelayedAsync();
         }
         catch (DeviceBlockedException)
         {
@@ -65,6 +68,20 @@ public partial class MainWindow : Window
             PlayButton.IsEnabled = false;
             SetStatus("Accountserver niet bereikbaar.");
             _log.Error($"Startupcontrole mislukt: {ex}");
+        }
+    }
+
+    private async Task CheckForUpdateDelayedAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            if (_playing || _blocked) return;
+            await _updates.CheckAndScheduleAsync();
+        }
+        catch (Exception ex)
+        {
+            _log.Error($"Achtergrond launcher-updatecontrole mislukt: {ex.Message}");
         }
     }
 
