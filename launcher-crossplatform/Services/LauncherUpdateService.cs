@@ -102,17 +102,19 @@ public sealed class LauncherUpdateService
         else
         {
             var scriptPath = Path.Combine(Path.GetDirectoryName(source)!, $"update-{Guid.NewGuid():N}.sh");
-            var script = $"#!/bin/sh
-PID={pid}
-SRC='{EscapeShell(source)}'
-DST='{EscapeShell(target)}'
-sleep 1
-while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
-mv -f "$SRC" "$DST"
-chmod +x "$DST"
-rm -f "$0"
-nohup "$DST" >/dev/null 2>&1 &
-";
+            var script = string.Join(Environment.NewLine, new[]
+            {
+                "#!/bin/sh",
+                $"PID={pid}",
+                $"SRC='{EscapeShell(source)}'",
+                $"DST='{EscapeShell(target)}'",
+                "sleep 1",
+                "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done",
+                "mv -f \"$SRC\" \"$DST\"",
+                "chmod +x \"$DST\"",
+                "rm -f \"$0\"",
+                "nohup \"$DST\" >/dev/null 2>&1 &"
+            }) + Environment.NewLine;
             await File.WriteAllTextAsync(scriptPath, script, new UTF8Encoding(false));
             try { File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); } catch { }
 
