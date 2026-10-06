@@ -2,7 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
-using CmlLib.Core;
+using Avalonia.Threading;
+using HVMCLauncher.CrossPlatform.Services;
 
 namespace HVMCLauncher.CrossPlatform;
 
