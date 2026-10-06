@@ -25,7 +25,7 @@ jobs:
         run: |
           if (-not (Test-Path "artifacts/win-x64/HVMC.exe")) { throw "Windows publish failed." }
 
-  macos:
+  macos-x64:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
