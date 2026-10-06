@@ -46,15 +46,15 @@ This makes it possible to use a smaller pool of Minecraft accounts across a larg
 
 ## Designed for Shared Computers
 
-The HVMC Launcher is especially useful for environments where PCs are shared between many users.
+The HVMC Launcher is designed specifically for environments where Minecraft PCs are shared between multiple users.
 
-A typical setup can look like:
+Minecraft accounts are managed centrally by Bendemen Studios through the HVMC account infrastructure. Organizations do not need to purchase, configure, or manually manage a separate Minecraft account for every individual PC.
 
-**Organization → Account Pool → Authorized PCs → Users**
+Authorized PCs can request an available Minecraft account when Minecraft is launched. The account is temporarily assigned to that PC for the duration of the session and is automatically released when it is no longer in use.
 
-The organization controls the available accounts and authorized computers, while the launcher handles the technical process of obtaining and releasing an account when Minecraft is used.
+This allows organizations to operate a larger number of shared Minecraft PCs while keeping the account management centralized and reducing the administrative workload for schools, care organizations, and other organizations.
 
-The result is a simpler and more manageable Minecraft experience for organizations operating multiple PCs.
+The organization remains responsible for its PCs and authorized users, while Bendemen Studios manages the Minecraft account pool and the associated account infrastructure.
 
 ### Want to use the software for your organisation?
 
