@@ -1,1 +1,50 @@
-name: Cross-platform launcher CI\n\non:\n  push:\n    branches:\n      - cross-platform-development\n    paths:\n      - 'launcher-crossplatform/**'\n      - 'version.txt'\n      - '.github/workflows/cross-platform-launcher.yml'\n  pull_request:\n    paths:\n      - 'launcher-crossplatform/**'\n      - 'version.txt'\n      - '.github/workflows/cross-platform-launcher.yml'\n  workflow_dispatch:\n\npermissions:\n  contents: read\n\njobs:\n  build:\n    name: Build ${{ matrix.os }} / ${{ matrix.rid }}\n    runs-on: ${{ matrix.os }}\n    strategy:\n      fail-fast: false\n      matrix:\n        include:\n          - os: windows-latest\n            rid: win-x64\n          - os: macos-latest\n            rid: osx-x64\n          - os: ubuntu-latest\n            rid: linux-x64\n\n    steps:\n      - name: Checkout\n        uses: actions/checkout@v4\n\n      - name: Setup .NET\n        uses: actions/setup-dotnet@v4\n        with:\n          dotnet-version: '10.0.x'\n\n      - name: Restore\n        run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj\n\n      - name: Build\n        run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj -c Release --no-restore\n\n      - name: Publish smoke build\n        run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj -c Release -r ${{ matrix.rid }} --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=false -o artifacts/${{ matrix.rid }}\n\n      - name: Verify executable exists\n        shell: bash\n        run: |\n          set -e\n          test -d "artifacts/${{ matrix.rid }}"\n          test "$(find "artifacts/${{ matrix.rid }}" -maxdepth 1 -type f | wc -l)" -gt 0\n          echo "Publish output verified for ${{ matrix.rid }}"
+name: Cross-platform launcher CI
+
+on:
+  push:
+    branches: [cross-platform-development]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+      - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/win-x64
+      - shell: pwsh
+        run: |
+          if (-not (Test-Path "artifacts/win-x64/HVMC.exe")) { throw "Windows publish failed." }
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+      - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime osx-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/osx-x64
+      - run: test -f artifacts/osx-x64/HVMC
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+      - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/linux-x64
+      - run: test -f artifacts/linux-x64/HVMC
