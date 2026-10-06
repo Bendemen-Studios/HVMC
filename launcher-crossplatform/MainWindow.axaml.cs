@@ -1,68 +1,68 @@
-using System.Net.Http;
-using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Text;
-using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using CmlLib.Core;
 
 namespace HVMCLauncher.CrossPlatform;
 
 public partial class MainWindow : Window
 {
-    private const string PoolApi = "https://accounts.hvmc.nl";
-    private const int PcHeartbeatSeconds = 5;
-
-    private readonly string _root;
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
-    private string? _clientId;
-    private string? _deviceToken;
-    private CancellationTokenSource? _heartbeatCts;
+    private readonly LauncherLogger _log = new();
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(180) };
+    private readonly AccountPoolClient _accounts;
+    private readonly ContentSyncService _content;
+    private readonly MinecraftService _minecraft;
+    private Process? _minecraftProcess;
+    private bool _playing;
+    private bool _blocked;
 
     public MainWindow()
     {
         InitializeComponent();
+        HvmcPaths.Ensure();
 
-        _root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Bendemen", "HVMC");
-        Directory.CreateDirectory(_root);
+        _accounts = new AccountPoolClient(_http, _log);
+        _content = new ContentSyncService(_http, _log);
+        _minecraft = new MinecraftService(_http, _log);
 
         VersionText.Text = $"Versie: v{App.AppVersion}";
-        _clientId = GetStableClientId();
-        _deviceToken = GetDeviceToken();
-
         Opened += async (_, _) => await InitializeAsync();
-        Closed += (_, _) =>
+        Closed += async (_, _) =>
         {
-            _heartbeatCts?.Cancel();
+            try { await StopMinecraftAsync(); } catch { }
+            _accounts.Dispose();
             _http.Dispose();
         };
     }
 
     private async Task InitializeAsync()
     {
-        if (string.IsNullOrWhiteSpace(_deviceToken))
-        {
-            AuthorizationPanel.IsVisible = true;
-            PlayButton.IsEnabled = false;
-            StatusText.Text = "Deze pc moet eenmalig worden geautoriseerd.";
-            return;
-        }
-
         try
         {
-            if (await EnsurePcAuthorizedAsync())
+            SetStatus("HVMC controleren...");
+            if (!await _accounts.EnsureAuthorizedAsync())
             {
-                AuthorizationPanel.IsVisible = false;
-                PlayButton.IsEnabled = true;
-                StatusText.Text = "Klaar om te spelen.";
-                StartPcHeartbeat();
+                AuthorizationPanel.IsVisible = true;
+                PlayButton.IsEnabled = false;
+                SetStatus("Deze pc moet eenmalig worden geautoriseerd.");
+                return;
             }
+
+            AuthorizationPanel.IsVisible = false;
+            PlayButton.IsEnabled = true;
+            _accounts.StartPcHeartbeat();
+            SetStatus("Klaar om te spelen.");
+        }
+        catch (DeviceBlockedException)
+        {
+            await BlockDeviceAsync();
         }
         catch (Exception ex)
         {
             PlayButton.IsEnabled = false;
-            StatusText.Text = $"Accountserver niet bereikbaar: {ex.Message}";
+            SetStatus("Accountserver niet bereikbaar.");
+            _log.Error($"Startupcontrole mislukt: {ex}");
         }
     }
 
@@ -71,40 +71,17 @@ public partial class MainWindow : Window
         AuthorizeButton.IsEnabled = false;
         try
         {
-            var code = AuthorizationCodeBox.Text?.Trim().ToUpperInvariant() ?? string.Empty;
-            if (code.Length != 10)
-                throw new InvalidOperationException("Vul de 10-karakter HVMC pc-autorisatiecode in.");
-
-            _clientId ??= GetStableClientId();
-
-            using var content = new StringContent(
-                JsonSerializer.Serialize(new { clientId = _clientId, code, name = Environment.MachineName }),
-                Encoding.UTF8, "application/json");
-
-            using var response = await _http.PostAsync($"{PoolApi}/v1/launcher/pc/register", content);
-            var json = await response.Content.ReadAsStringAsync();
-
-            if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(GetError(json));
-
-            using var document = JsonDocument.Parse(json);
-            if (!document.RootElement.TryGetProperty("deviceToken", out var tokenElement))
-                throw new InvalidOperationException("De server gaf geen pc-token terug.");
-
-            var token = tokenElement.GetString()?.Trim();
-            if (string.IsNullOrWhiteSpace(token))
-                throw new InvalidOperationException("De server gaf een lege pc-token terug.");
-
-            SaveDeviceToken(token);
-            _deviceToken = token;
+            await _accounts.AuthorizeAsync(AuthorizationCodeBox.Text ?? "");
             AuthorizationPanel.IsVisible = false;
             PlayButton.IsEnabled = true;
-            StatusText.Text = "Pc geautoriseerd. Klaar om te spelen.";
-            StartPcHeartbeat();
+            _accounts.StartPcHeartbeat();
+            SetStatus("Pc geautoriseerd. Klaar om te spelen.");
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Pc-autorisatie mislukt: {ex.Message}";
+            SetStatus("Pc-autorisatie mislukt.");
+            _log.Error($"Pc-autorisatie mislukt: {ex}");
+            await ShowErrorAsync("Pc-autorisatie mislukt", ex.Message);
         }
         finally
         {
@@ -114,146 +91,184 @@ public partial class MainWindow : Window
 
     private async void PlayButton_Click(object? sender, RoutedEventArgs e)
     {
+        if (_playing || _blocked) return;
+
+        _playing = true;
         PlayButton.IsEnabled = false;
+        ExitButton.IsEnabled = false;
+
         try
         {
-            if (!await EnsurePcAuthorizedAsync())
-                return;
+            await StopMinecraftAsync();
 
-            StatusText.Text = "Cross-platform basis is klaar. Minecraft-launch migratie volgt in de volgende fase.";
+            if (!await _accounts.EnsureAuthorizedAsync())
+            {
+                AuthorizationPanel.IsVisible = true;
+                SetStatus("Deze pc moet eenmalig worden geautoriseerd.");
+                return;
+            }
+
+            SetStatus("HVMC content synchroniseren...");
+            await _content.SyncAsync();
+
+            SetStatus("Minecraft voorbereiden...");
+            var lease = await _accounts.AcquireLeaseAsync();
+
+            try
+            {
+                SetStatus($"{lease.AccountName} geselecteerd.");
+
+                var screen = Screens.Primary;
+                var width = screen is null ? 1920 : Math.Max(1280, (int)screen.Bounds.Width);
+                var height = screen is null ? 1080 : Math.Max(720, (int)screen.Bounds.Height);
+
+                SetStatus("Minecraft starten...");
+                _minecraftProcess = await _minecraft.PrepareAndBuildAsync(
+                    lease,
+                    _content.FabricProfile,
+                    width,
+                    height);
+
+                AttachMinecraftLogging(_minecraftProcess);
+                _minecraftProcess.Start();
+                _minecraftProcess.BeginOutputReadLine();
+                _minecraftProcess.BeginErrorReadLine();
+
+                _accounts.StartLeaseHeartbeat();
+                SetStatus("Minecraft draait.");
+
+                await _minecraftProcess.WaitForExitAsync();
+                var exitCode = _minecraftProcess.ExitCode;
+
+                if (exitCode != 0)
+                    _log.Error($"Minecraft afgesloten met exitcode {exitCode}.");
+            }
+            finally
+            {
+                await _accounts.ReleaseLeaseAsync();
+            }
+        }
+        catch (DeviceBlockedException)
+        {
+            await BlockDeviceAsync();
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Starten mislukt: {ex.Message}";
+            _log.Error($"Minecraft starten mislukt: {ex}");
+            SetStatus("Minecraft kon niet worden gestart.");
+            await ShowErrorAsync("Minecraft starten mislukt", FriendlyError(ex));
         }
         finally
         {
-            PlayButton.IsEnabled = true;
+            await StopMinecraftAsync();
+            _playing = false;
+            if (!_blocked)
+            {
+                PlayButton.IsEnabled = true;
+                ExitButton.IsEnabled = true;
+                if (!AuthorizationPanel.IsVisible)
+                    SetStatus("Klaar om te spelen.");
+            }
         }
+    }
+
+    private void AttachMinecraftLogging(Process process)
+    {
+        try
+        {
+            Directory.CreateDirectory(HvmcPaths.Root);
+            var writer = new StreamWriter(HvmcPaths.MinecraftLog, false, Encoding.UTF8)
+            {
+                AutoFlush = true
+            };
+
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is null) return;
+                try { writer.WriteLine(e.Data); } catch { }
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data is null) return;
+                try { writer.WriteLine(e.Data); } catch { }
+            };
+            process.Exited += (_, _) =>
+            {
+                try { writer.Dispose(); } catch { }
+            };
+        }
+        catch (Exception ex)
+        {
+            _log.Error($"Minecraft logging kon niet worden gestart: {ex.Message}");
+        }
+    }
+
+    private async Task StopMinecraftAsync()
+    {
+        var process = _minecraftProcess;
+        if (process is null) return;
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch (TimeoutException)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+                }
+            }
+        }
+        catch (InvalidOperationException) { }
+        catch (Exception ex) { _log.Error($"Minecraft cleanup mislukt: {ex.Message}"); }
+        finally
+        {
+            try { process.Dispose(); } catch { }
+            _minecraftProcess = null;
+        }
+    }
+
+    private async Task BlockDeviceAsync()
+    {
+        if (_blocked) return;
+        _blocked = true;
+        PlayButton.IsEnabled = false;
+        ExitButton.IsEnabled = false;
+        try { await StopMinecraftAsync(); } catch { }
+        SetStatus("Deze pc is geblokkeerd.");
+        await ShowErrorAsync("HVMC", "Je bent geblokkeerd. Neem contact op met info@bendemen.nl voor meer informatie.");
+        Close();
+    }
+
+    private async Task ShowErrorAsync(string title, string message)
+    {
+        var dialog = new Window
+        {
+            Title = title,
+            Width = 560,
+            Height = 320,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = true
+        };
+
+        var panel = new StackPanel { Margin = new Avalonia.Thickness(24), Spacing = 18 };
+        panel.Children.Add(new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap });
+        var button = new Button { Content = "OK", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Width = 100 };
+        button.Click += (_, _) => dialog.Close();
+        panel.Children.Add(button);
+        dialog.Content = panel;
+        await dialog.ShowDialog(this);
+    }
+
+    private static string FriendlyError(Exception ex)
+    {
+        if (ex is HttpRequestException) return "De accountserver of downloadserver is niet bereikbaar.";
+        if (ex is TaskCanceledException) return "De verbinding duurde te lang. Probeer het opnieuw.";
+        if (ex is UnauthorizedAccessException) return "HVMC heeft geen toegang tot de benodigde bestanden.";
+        return string.IsNullOrWhiteSpace(ex.Message) ? "Er is een onverwachte fout opgetreden." : ex.Message;
     }
 
     private void ExitButton_Click(object? sender, RoutedEventArgs e) => Close();
-
-    private async Task<bool> EnsurePcAuthorizedAsync()
-    {
-        if (string.IsNullOrWhiteSpace(_clientId))
-            return false;
-
-        using var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            $"{PoolApi}/v1/launcher/pc/status?clientId={Uri.EscapeDataString(_clientId)}");
-
-        if (!string.IsNullOrWhiteSpace(_deviceToken))
-            request.Headers.Add("x-hvmc-device-token", _deviceToken);
-
-        using var response = await _http.SendAsync(request);
-        var json = await response.Content.ReadAsStringAsync();
-
-        if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_deviceToken))
-            return true;
-
-        if ((int)response.StatusCode == 403)
-            throw new InvalidOperationException("Deze pc is geblokkeerd.");
-
-        if ((int)response.StatusCode is not 404 and not 401)
-            throw new InvalidOperationException(GetError(json));
-
-        AuthorizationPanel.IsVisible = true;
-        PlayButton.IsEnabled = false;
-        StatusText.Text = "Deze pc moet eenmalig worden geautoriseerd.";
-        return false;
-    }
-
-    private void StartPcHeartbeat()
-    {
-        if (_heartbeatCts is not null)
-            return;
-
-        _heartbeatCts = new CancellationTokenSource();
-        _ = Task.Run(async () =>
-        {
-            while (!_heartbeatCts.IsCancellationRequested)
-            {
-                try
-                {
-                    if (string.IsNullOrWhiteSpace(_clientId) || string.IsNullOrWhiteSpace(_deviceToken))
-                        break;
-
-                    using var request = new HttpRequestMessage(HttpMethod.Post, $"{PoolApi}/v1/launcher/pc/heartbeat");
-                    request.Headers.Add("x-hvmc-client-id", _clientId);
-                    request.Headers.Add("x-hvmc-device-token", _deviceToken);
-                    request.Content = new StringContent(
-                        JsonSerializer.Serialize(new { clientId = _clientId }),
-                        Encoding.UTF8, "application/json");
-
-                    using var response = await _http.SendAsync(request, _heartbeatCts.Token);
-                    if ((int)response.StatusCode == 403)
-                        break;
-                }
-                catch when (!_heartbeatCts.IsCancellationRequested) { }
-
-                await Task.Delay(TimeSpan.FromSeconds(PcHeartbeatSeconds), _heartbeatCts.Token);
-            }
-        });
-    }
-
-    private string GetStableClientId()
-    {
-        var path = Path.Combine(_root, "client-id.txt");
-        try
-        {
-            if (File.Exists(path))
-            {
-                var saved = File.ReadAllText(path).Trim();
-                if (saved.Length == 64 && saved.All(Uri.IsHexDigit))
-                    return saved.ToLowerInvariant();
-            }
-        }
-        catch { }
-
-        var value = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(Environment.MachineName.Trim())))
-            .ToLowerInvariant();
-
-        try { File.WriteAllText(path, value); } catch { }
-        return value;
-    }
-
-    private string? GetDeviceToken()
-    {
-        var path = Path.Combine(_root, "device.token");
-        try
-        {
-            if (!File.Exists(path))
-                return null;
-
-            var token = File.ReadAllText(path).Trim();
-            return token.Length >= 20 ? token : null;
-        }
-        catch { return null; }
-    }
-
-    private void SaveDeviceToken(string token)
-    {
-        if (token.Any(c => c is '\r' or '\n' or '\0'))
-            throw new InvalidOperationException("De pc-token bevat ongeldige tekens.");
-
-        Directory.CreateDirectory(_root);
-        File.WriteAllText(Path.Combine(_root, "device.token"), token.Trim());
-    }
-
-    private static string GetError(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("error", out var error))
-                return error.GetString() ?? "Onbekende serverfout.";
-            if (doc.RootElement.TryGetProperty("message", out var message))
-                return message.GetString() ?? "Onbekende serverfout.";
-        }
-        catch { }
-
-        return string.IsNullOrWhiteSpace(json) ? "Onbekende serverfout." : json;
-    }
+    private void SetStatus(string text) => Dispatcher.UIThread.Post(() => StatusText.Text = text);
 }
