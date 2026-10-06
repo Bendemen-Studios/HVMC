@@ -48,3 +48,15 @@ jobs:
       - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
       - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/linux-x64
       - run: test -f artifacts/linux-x64/HVMC
+
+  linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+      - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-arm64 --self-contained true -p:PublishSingleFile=true -o artifacts/linux-arm64
+      - run: test -f artifacts/linux-arm64/HVMC
