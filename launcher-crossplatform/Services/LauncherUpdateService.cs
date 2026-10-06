@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -43,7 +44,7 @@ public sealed class LauncherUpdateService
         var tag = $"v{remote}";
         var asset = GetAssetName();
         var url = $"https://github.com/{Repo}/releases/download/{tag}/{asset}";
-        var temp = Path.Combine(HvmcPaths.Root, $"HVMC-update-{Guid.NewGuid():N}");
+        var temp = Path.Combine(HvmcPaths.Root, $"HVMC-update-{Guid.NewGuid():N}{GetArchiveExtension()}");
 
         try
         {
@@ -63,8 +64,27 @@ public sealed class LauncherUpdateService
             if (size < 1_000_000)
                 throw new InvalidOperationException("Nieuwe launcher is te klein.");
 
-            await ScheduleReplacementAsync(temp, currentPath);
-            return true;
+            if (OperatingSystem.IsWindows())
+            {
+                await ScheduleReplacementAsync(temp, currentPath);
+                return true;
+            }
+
+            var extracted = Path.Combine(HvmcPaths.Root, $"HVMC-update-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(extracted);
+            try
+            {
+                ExtractArchive(temp, extracted);
+                var replacement = FindReplacement(extracted)
+                    ?? throw new InvalidOperationException("Het updatepakket bevat geen geschikte HVMC-launcher.");
+                await ScheduleReplacementAsync(replacement, currentPath);
+                return true;
+            }
+            catch
+            {
+                try { Directory.Delete(extracted, true); } catch { }
+                throw;
+            }
         }
         catch (Exception ex)
         {
@@ -80,9 +100,61 @@ public sealed class LauncherUpdateService
 
         var arch = RuntimeInformation.ProcessArchitecture;
         if (OperatingSystem.IsMacOS())
-            return arch == Architecture.Arm64 ? "HVMC-macos-arm64" : "HVMC-macos-x64";
+            return arch == Architecture.Arm64 ? "HVMC-macos-arm64.zip" : "HVMC-macos-x64.zip";
 
-        return arch == Architecture.Arm64 ? "HVMC-linux-arm64" : "HVMC-linux-x64";
+        return arch == Architecture.Arm64 ? "HVMC-linux-arm64.tar.gz" : "HVMC-linux-x64.tar.gz";
+    }
+
+    private static string GetArchiveExtension()
+    {
+        if (OperatingSystem.IsWindows()) return ".exe";
+        return OperatingSystem.IsMacOS() ? ".zip" : ".tar.gz";
+    }
+
+    private static void ExtractArchive(string archive, string destination)
+    {
+        if (archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            ZipFile.ExtractToDirectory(archive, destination, true);
+            return;
+        }
+
+        if (archive.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "tar",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true
+            };
+            psi.ArgumentList.Add("-xzf");
+            psi.ArgumentList.Add(archive);
+            psi.ArgumentList.Add("-C");
+            psi.ArgumentList.Add(destination);
+
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("tar kon niet worden gestart.");
+            process.WaitForExit();
+
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"Uitpakken van launcher-update mislukt: {process.StandardError.ReadToEnd()}");
+            return;
+        }
+
+        throw new InvalidOperationException($"Onbekend launcher-updateformaat: {archive}");
+    }
+
+    private static string? FindReplacement(string extracted)
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            return Directory.EnumerateFiles(extracted, "HVMC", SearchOption.AllDirectories)
+                .FirstOrDefault(path => path.Contains($"{Path.DirectorySeparatorChar}Contents{Path.DirectorySeparatorChar}MacOS{Path.DirectorySeparatorChar}HVMC", StringComparison.Ordinal))
+                ?? Directory.EnumerateFiles(extracted, "HVMC", SearchOption.AllDirectories).FirstOrDefault();
+        }
+
+        return Directory.EnumerateFiles(extracted, "HVMC", SearchOption.AllDirectories).FirstOrDefault();
     }
 
     private static async Task ScheduleReplacementAsync(string source, string target)
