@@ -24,7 +24,7 @@
       </StackPanel>
       <Button x:Name="PlayButton" Content="SPELEN" Height="76" Margin="0,0,0,18"
               FontSize="25" FontWeight="Bold" Foreground="#261E0B" Background="#D7A62F" Click="PlayButton_Click"/>
-      <Button Content="AFSLUITEN" Height="62" FontSize="18" FontWeight="SemiBold"
+      <Button x:Name="ExitButton" Content="AFSLUITEN" Height="62" FontSize="18" FontWeight="SemiBold"
               Foreground="#4B463D" Background="#FFFFFF" Click="ExitButton_Click"/>
     </StackPanel>
     <StackPanel Grid.Row="3" HorizontalAlignment="Center" Margin="0,25,0,0">
