@@ -65,6 +65,40 @@ jobs:
           name: HVMC-macos-x64
           path: artifacts/HVMC-macos-x64.zip
 
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+      - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime osx-arm64 --self-contained true -p:PublishSingleFile=true -o artifacts/osx-arm64
+      - run: |
+          test -f artifacts/osx-arm64/HVMC
+          mkdir -p artifacts/HVMC-arm64.app/Contents/MacOS artifacts/HVMC-arm64.app/Contents/Resources
+          cp artifacts/osx-arm64/HVMC artifacts/HVMC-arm64.app/Contents/MacOS/HVMC
+          chmod +x artifacts/HVMC-arm64.app/Contents/MacOS/HVMC
+          VERSION=$(cat version.txt)
+          cat > artifacts/HVMC-arm64.app/Contents/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>HVMC</string>
+            <key>CFBundleIdentifier</key><string>nl.hvmc.launcher</string>
+            <key>CFBundleName</key><string>HVMC School Launcher</string>
+            <key>CFBundleDisplayName</key><string>HVMC School Launcher</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${VERSION}.0</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+          </dict></plist>
+          EOF
+          ditto -c -k --sequesterRsrc --keepParent artifacts/HVMC-arm64.app artifacts/HVMC-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HVMC-macos-arm64
+          path: artifacts/HVMC-macos-arm64.zip
   linux:
     runs-on: ubuntu-latest
     steps:
