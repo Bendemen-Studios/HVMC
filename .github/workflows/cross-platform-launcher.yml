@@ -20,7 +20,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
       - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
-      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/win-x64
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/win-x64
       - shell: pwsh
         run: |
           if (-not (Test-Path "artifacts/win-x64/HVMC.exe")) { throw "Windows publish failed." }
@@ -39,7 +39,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
       - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
-      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime osx-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/osx-x64
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime osx-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/osx-x64
       - run: |
           test -f artifacts/osx-x64/HVMC
           mkdir -p artifacts/HVMC.app/Contents/MacOS artifacts/HVMC.app/Contents/Resources
@@ -74,7 +74,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
       - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
-      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime osx-arm64 --self-contained true -p:PublishSingleFile=true -o artifacts/osx-arm64
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime osx-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/osx-arm64
       - run: |
           test -f artifacts/osx-arm64/HVMC
           mkdir -p artifacts/HVMC-arm64.app/Contents/MacOS artifacts/HVMC-arm64.app/Contents/Resources
@@ -108,7 +108,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
       - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
-      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/linux-x64
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/linux-x64
       - run: |
           test -f artifacts/linux-x64/HVMC
           chmod +x artifacts/linux-x64/HVMC
@@ -127,7 +127,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
       - run: dotnet build launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --no-restore
-      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-arm64 --self-contained true -p:PublishSingleFile=true -o artifacts/linux-arm64
+      - run: dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj --configuration Release --runtime linux-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/linux-arm64
       - run: |
           test -f artifacts/linux-arm64/HVMC
           chmod +x artifacts/linux-arm64/HVMC
