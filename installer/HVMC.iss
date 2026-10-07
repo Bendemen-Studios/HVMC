@@ -27,6 +27,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\launcher\hvmc.ico
 CloseApplications=yes
 RestartApplications=no
+; The installer is first-install/update-safe even when HVMC.exe is still running.
+; Restart Manager normally closes it, while PrepareToInstall provides a deterministic
+; fallback for machines where Restart Manager cannot obtain the executable handle.
 
 [Files]
 Source: "..\artifacts\HVMCLauncher\HVMC.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
@@ -40,3 +43,27 @@ Name: "desktopicon"; Description: "Maak een snelkoppeling op het bureaublad"; Gr
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "HVMC School Launcher starten"; Flags: nowait postinstall skipifsilent
+
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+
+  { Explicitly close an already-running HVMC launcher before the executable
+    is replaced. This prevents ERROR_SHARING_VIOLATION / code 5 on machines
+    where Windows Restart Manager cannot close the WPF process. }
+  Exec(
+    ExpandConstant('{sys}	askkill.exe'),
+    '/F /T /IM "HVMC.exe"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+
+  { Give Windows/antivirus a moment to release the executable handle. }
+  Sleep(750);
+end;
