@@ -160,9 +160,11 @@ public partial class MainWindow : Window
 
         WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
 
-        // Network checks continue after the UI is usable. Every launcher
-        // startup performs a fresh release-version check so a newly published
-        // launcher is picked up on the next startup.
+        // Start all network checks after the first frame is visible.
+        // This call is intentionally fire-and-forget: the launcher must not
+        // freeze on "Versie controleren..." while GitHub or the account server
+        // is slow. PlayButton_Click still awaits the version check before launch.
+        _ = InitializeStartupChecksAsync();
     }
 
     private async Task InitializeStartupChecksAsync()
@@ -247,8 +249,24 @@ public partial class MainWindow : Window
             AuthorizationPanel.Visibility = Visibility.Collapsed;
             await SendPcHeartbeatAsync();
             StartPcHeartbeat();
-            SetStatus("Pc geautoriseerd. Klaar om te spelen.");
-            PlayButton.IsEnabled = true;
+
+            if (_startupVersionCheckTask is not null)
+            {
+                try
+                {
+                    await _startupVersionCheckTask;
+                }
+                catch (Exception ex)
+                {
+                    WriteLauncherLog($"Versiecontrole na pc-autorisatie gaf een fout: {ex.Message}");
+                }
+            }
+
+            if (!_launcherUpdateScheduled)
+            {
+                SetStatus("Pc geautoriseerd. Klaar om te spelen.");
+                PlayButton.IsEnabled = true;
+            }
         }
         catch (Exception ex) { SetStatus("Pc-autorisatie mislukt."); ShowError("Pc-autorisatie mislukt", ex); }
         finally { AuthorizeButton.IsEnabled = true; }
