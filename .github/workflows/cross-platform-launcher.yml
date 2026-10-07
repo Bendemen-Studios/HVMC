@@ -112,6 +112,22 @@ jobs:
       - run: |
           test -f artifacts/linux-x64/HVMC
           chmod +x artifacts/linux-x64/HVMC
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          set +e
+          timeout 15s xvfb-run -a ./artifacts/linux-x64/HVMC > artifacts/linux-x64/runtime-smoke.log 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            cat artifacts/linux-x64/runtime-smoke.log
+            echo "Linux launcher exited unexpectedly with code $code."
+            exit 1
+          fi
+          if grep -Eqi 'DllNotFoundException|libSkiaSharp|BadImageFormatException|Unable to load shared library' artifacts/linux-x64/runtime-smoke.log; then
+            cat artifacts/linux-x64/runtime-smoke.log
+            echo "Linux native runtime smoke test detected a native library failure."
+            exit 1
+          fi
           tar -C artifacts/linux-x64 -czf artifacts/HVMC-linux-x64.tar.gz HVMC
       - uses: actions/upload-artifact@v4
         with:
