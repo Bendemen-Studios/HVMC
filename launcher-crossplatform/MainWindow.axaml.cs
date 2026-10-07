@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private Process? _minecraftProcess;
     private bool _playing;
     private bool _blocked;
+    private bool _contentUpdateFailed;
 
     public MainWindow()
     {
@@ -30,7 +31,11 @@ public partial class MainWindow : Window
         _minecraft = new MinecraftService(_http, _log);
         _updates = new LauncherUpdateService(_http, _log);
 
-        VersionText.Text = $"Versie: v{App.AppVersion}";
+        if (Version.TryParse(App.AppVersion, out var releaseVersion))
+            VersionText.Text = $"Versie: v{releaseVersion.Major}.{releaseVersion.Minor}";
+        else
+            VersionText.Text = $"Versie: v{App.AppVersion}";
+
         Opened += async (_, _) => await InitializeAsync();
         Closed += async (_, _) =>
         {
@@ -42,22 +47,49 @@ public partial class MainWindow : Window
 
     private async Task InitializeAsync()
     {
+        // The launcher must become usable before network maintenance starts.
+        PlayButton.IsEnabled = !string.IsNullOrWhiteSpace(_accounts.DeviceToken);
+        AuthorizationPanel.IsVisible = string.IsNullOrWhiteSpace(_accounts.DeviceToken);
+        SetStatus(AuthorizationPanel.IsVisible
+            ? "Deze pc moet eenmalig worden geautoriseerd."
+            : "Klaar om te spelen.");
+
+        _ = InitializeStartupChecksAsync();
+    }
+
+    private async Task InitializeStartupChecksAsync()
+    {
         try
         {
-            SetStatus("HVMC controleren...");
-            if (!await _accounts.EnsureAuthorizedAsync())
+            if (!string.IsNullOrWhiteSpace(_accounts.DeviceToken))
             {
-                AuthorizationPanel.IsVisible = true;
-                PlayButton.IsEnabled = false;
-                SetStatus("Deze pc moet eenmalig worden geautoriseerd.");
-                return;
+                var authorized = await _accounts.EnsureAuthorizedAsync();
+                if (!authorized)
+                {
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        AuthorizationPanel.IsVisible = true;
+                        PlayButton.IsEnabled = false;
+                        SetStatus("Deze pc moet eenmalig worden geautoriseerd.");
+                    });
+                    return;
+                }
+
+                _accounts.StartPcHeartbeat();
+                SetStatus("Klaar om te spelen.");
+                PlayButton.IsEnabled = true;
             }
 
-            AuthorizationPanel.IsVisible = false;
-            PlayButton.IsEnabled = true;
-            _accounts.StartPcHeartbeat();
-            SetStatus("Klaar om te spelen.");
-            _ = CheckForUpdateDelayedAsync();
+            if (ShouldCheckLauncherUpdate())
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+                if (_playing || _blocked || !ShouldCheckLauncherUpdate())
+                    return;
+
+                var updated = await _updates.CheckAndScheduleAsync();
+                if (!updated)
+                    SaveLauncherUpdateCheck();
+            }
         }
         catch (DeviceBlockedException)
         {
@@ -65,24 +97,44 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            PlayButton.IsEnabled = false;
-            SetStatus("Accountserver niet bereikbaar.");
-            _log.Error($"Startupcontrole mislukt: {ex}");
+            // Startup maintenance must never make the launcher unusable.
+            _log.Error($"Achtergrond-startupcontrole mislukt: {ex}");
+            if (!_blocked)
+            {
+                SetStatus("Klaar om te spelen.");
+                PlayButton.IsEnabled = !AuthorizationPanel.IsVisible;
+            }
         }
     }
 
-    private async Task CheckForUpdateDelayedAsync()
+    private static bool ShouldCheckLauncherUpdate()
     {
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(5));
-            if (_playing || _blocked) return;
-            await _updates.CheckAndScheduleAsync();
+            if (!File.Exists(HvmcPaths.LauncherUpdateCheck))
+                return true;
+
+            var text = File.ReadAllText(HvmcPaths.LauncherUpdateCheck).Trim();
+            if (!DateTimeOffset.TryParse(text, out var lastCheck))
+                return true;
+
+            return DateTimeOffset.UtcNow - lastCheck >= TimeSpan.FromHours(6);
         }
-        catch (Exception ex)
+        catch
         {
-            _log.Error($"Achtergrond launcher-updatecontrole mislukt: {ex.Message}");
+            return true;
         }
+    }
+
+    private static void SaveLauncherUpdateCheck()
+    {
+        try
+        {
+            File.WriteAllText(
+                HvmcPaths.LauncherUpdateCheck,
+                DateTimeOffset.UtcNow.ToString("O"));
+        }
+        catch { }
     }
 
     private async void AuthorizeButton_Click(object? sender, RoutedEventArgs e)
@@ -96,11 +148,15 @@ public partial class MainWindow : Window
             _accounts.StartPcHeartbeat();
             SetStatus("Pc geautoriseerd. Klaar om te spelen.");
         }
+        catch (DeviceBlockedException)
+        {
+            await BlockDeviceAsync();
+        }
         catch (Exception ex)
         {
             SetStatus("Pc-autorisatie mislukt.");
             _log.Error($"Pc-autorisatie mislukt: {ex}");
-            await ShowErrorAsync("Pc-autorisatie mislukt", ex.Message);
+            await ShowErrorAsync("Pc-autorisatie mislukt", FriendlyError(ex));
         }
         finally
         {
@@ -127,6 +183,7 @@ public partial class MainWindow : Window
                 return;
             }
 
+            _contentUpdateFailed = false;
             SetStatus("HVMC content synchroniseren...");
             await _content.SyncAsync();
 
@@ -159,8 +216,11 @@ public partial class MainWindow : Window
                 await _minecraftProcess.WaitForExitAsync();
                 var exitCode = _minecraftProcess.ExitCode;
 
+                await WaitForMinecraftShutdownAsync(_minecraftProcess);
+
                 if (exitCode != 0)
-                    _log.Error($"Minecraft afgesloten met exitcode {exitCode}.");
+                    throw new InvalidOperationException(
+                        $"Minecraft is direct afgesloten (exitcode {exitCode}). Bekijk het logbestand: {HvmcPaths.MinecraftLog}");
             }
             finally
             {
@@ -174,20 +234,41 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             _log.Error($"Minecraft starten mislukt: {ex}");
-            SetStatus("Minecraft kon niet worden gestart.");
+            SetStatus("Minecraft is gestopt of kon niet starten.");
             await ShowErrorAsync("Minecraft starten mislukt", FriendlyError(ex));
         }
         finally
         {
             await StopMinecraftAsync();
             _playing = false;
+
             if (!_blocked)
             {
-                PlayButton.IsEnabled = true;
+                PlayButton.IsEnabled = !AuthorizationPanel.IsVisible;
                 ExitButton.IsEnabled = true;
-                if (!AuthorizationPanel.IsVisible)
+
+                if (!AuthorizationPanel.IsVisible &&
+                    !StatusText.Text.StartsWith("Minecraft is gestopt", StringComparison.OrdinalIgnoreCase))
                     SetStatus("Klaar om te spelen.");
             }
+        }
+    }
+
+    private async Task WaitForMinecraftShutdownAsync(Process process)
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            try
+            {
+                if (process.HasExited)
+                    return;
+            }
+            catch (InvalidOperationException)
+            {
+                return;
+            }
+
+            await Task.Delay(250);
         }
     }
 
@@ -231,7 +312,11 @@ public partial class MainWindow : Window
         {
             if (!process.HasExited)
             {
-                try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
+                SetStatus("Vorige Minecraft-sessie wordt afgesloten...");
+                try
+                {
+                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                }
                 catch (TimeoutException)
                 {
                     try { process.Kill(entireProcessTree: true); } catch { }
@@ -240,9 +325,13 @@ public partial class MainWindow : Window
             }
         }
         catch (InvalidOperationException) { }
-        catch (Exception ex) { _log.Error($"Minecraft cleanup mislukt: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            _log.Error($"Minecraft cleanup mislukt: {ex.Message}");
+        }
         finally
         {
+            try { process.Close(); } catch { }
             try { process.Dispose(); } catch { }
             _minecraftProcess = null;
         }
@@ -254,40 +343,108 @@ public partial class MainWindow : Window
         _blocked = true;
         PlayButton.IsEnabled = false;
         ExitButton.IsEnabled = false;
+
         try { await StopMinecraftAsync(); } catch { }
+
         SetStatus("Deze pc is geblokkeerd.");
-        await ShowErrorAsync("HVMC", "Je bent geblokkeerd. Neem contact op met info@bendemen.nl voor meer informatie.");
+        await ShowErrorAsync(
+            "HVMC",
+            "Je bent geblokkeerd. Neem contact op met info@bendemen.nl voor meer informatie.");
         Close();
     }
 
-    private async Task ShowErrorAsync(string title, string message)
+    private async Task ShowErrorAsync(string title, string message, bool allowContentRetry = false)
     {
         var dialog = new Window
         {
             Title = title,
-            Width = 560,
-            Height = 320,
+            Width = 620,
+            Height = allowContentRetry ? 360 : 320,
+            MinWidth = 520,
+            MinHeight = 280,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = true
         };
 
         var panel = new StackPanel { Margin = new Avalonia.Thickness(24), Spacing = 18 };
-        panel.Children.Add(new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap });
-        var button = new Button { Content = "OK", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Width = 100 };
-        button.Click += (_, _) => dialog.Close();
-        panel.Children.Add(button);
+        panel.Children.Add(new TextBlock
+        {
+            Text = message,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        });
+
+        var buttons = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Spacing = 10
+        };
+
+        if (allowContentRetry)
+        {
+            var retry = new Button { Content = "OPNIEUW DOWNLOADEN", Width = 190 };
+            retry.Click += async (_, _) =>
+            {
+                dialog.Close();
+                await RetryContentDownloadAsync();
+            };
+            buttons.Children.Add(retry);
+        }
+
+        var ok = new Button { Content = "OK", Width = 100 };
+        ok.Click += (_, _) => dialog.Close();
+        buttons.Children.Add(ok);
+        panel.Children.Add(buttons);
+
         dialog.Content = panel;
         await dialog.ShowDialog(this);
     }
 
+    private async Task RetryContentDownloadAsync()
+    {
+        PlayButton.IsEnabled = false;
+        ExitButton.IsEnabled = false;
+        _contentUpdateFailed = false;
+
+        try
+        {
+            SetStatus("HVMC content opnieuw downloaden...");
+            await _content.SyncAsync(forceRedownload: true);
+            SetStatus("HVMC content is bijgewerkt. Klaar om te spelen.");
+            PlayButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            _contentUpdateFailed = true;
+            SetStatus("Opnieuw downloaden mislukt.");
+            _log.Error($"Content opnieuw downloaden mislukt: {ex}");
+            await ShowErrorAsync("Opnieuw downloaden mislukt", FriendlyError(ex), allowContentRetry: true);
+        }
+        finally
+        {
+            ExitButton.IsEnabled = true;
+            if (!_contentUpdateFailed)
+                PlayButton.IsEnabled = true;
+        }
+    }
+
     private static string FriendlyError(Exception ex)
     {
-        if (ex is HttpRequestException) return "De accountserver of downloadserver is niet bereikbaar.";
-        if (ex is TaskCanceledException) return "De verbinding duurde te lang. Probeer het opnieuw.";
-        if (ex is UnauthorizedAccessException) return "HVMC heeft geen toegang tot de benodigde bestanden.";
-        return string.IsNullOrWhiteSpace(ex.Message) ? "Er is een onverwachte fout opgetreden." : ex.Message;
+        if (ex is HttpRequestException)
+            return "De accountserver of downloadserver is niet bereikbaar. Controleer je internetverbinding en probeer het opnieuw.";
+        if (ex is TaskCanceledException)
+            return "De verbinding duurde te lang. Probeer het opnieuw.";
+        if (ex is UnauthorizedAccessException)
+            return "HVMC heeft geen toegang tot de benodigde bestanden.";
+        if (ex is IOException)
+            return "HVMC kon een bestand niet lezen of schrijven. Controleer de bestandsrechten.";
+        return string.IsNullOrWhiteSpace(ex.Message)
+            ? "Er is een onverwachte fout opgetreden."
+            : ex.Message;
     }
 
     private void ExitButton_Click(object? sender, RoutedEventArgs e) => Close();
-    private void SetStatus(string text) => Dispatcher.UIThread.Post(() => StatusText.Text = text);
+
+    private void SetStatus(string text) =>
+        Dispatcher.UIThread.Post(() => StatusText.Text = text);
 }
