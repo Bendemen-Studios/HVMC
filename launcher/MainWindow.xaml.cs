@@ -152,8 +152,8 @@ public partial class MainWindow : Window
         else
         {
             AuthorizationPanel.Visibility = Visibility.Collapsed;
-            PlayButton.IsEnabled = true;
-            SetStatus("Klaar om te spelen.");
+            PlayButton.IsEnabled = false;
+            SetStatus("Versie controleren...");
         }
 
         WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
@@ -167,6 +167,11 @@ public partial class MainWindow : Window
     {
         try
         {
+            // Always perform a fresh release-version check on every startup.
+            // There is intentionally no local cache or startup delay.
+            if (!_playInProgress)
+                await CheckForLauncherUpdateAsync();
+
             if (!string.IsNullOrWhiteSpace(_deviceToken))
             {
                 var authorized = await EnsurePcAuthorizedAsync();
@@ -181,14 +186,6 @@ public partial class MainWindow : Window
                 SetStatus("Klaar om te spelen.");
                 PlayButton.IsEnabled = true;
             }
-
-            // Always check the current release version on every startup.
-            // The version request itself is explicitly no-cache, so a newly
-            // published release is detected without waiting for a local cache.
-            if (_playInProgress)
-                return;
-
-            await CheckForLauncherUpdateAsync();
         }
         catch (DeviceBlockedException)
         {
