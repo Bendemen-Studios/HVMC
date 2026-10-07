@@ -2,6 +2,14 @@ param([switch]$ForceRedownload)
 
 $ErrorActionPreference = 'Stop'
 
+# Force TLS 1.2 for Windows PowerShell 5.1. Older Windows installations can
+# otherwise negotiate an outdated protocol and fail against GitHub HTTPS.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {
+    # Newer PowerShell/.NET versions can use the system default safely.
+}
+
 # Windows PowerShell 5.1 does not always load System.Net.Http before the
 # parallel downloader creates HttpClient. Load the assembly explicitly so
 # the updater works on normal Windows installations as well as newer PowerShell.
