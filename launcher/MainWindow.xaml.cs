@@ -105,6 +105,7 @@ public partial class MainWindow : Window
     private bool _contentUpdateFailed;
     private bool _deviceBlocked;
     private bool _playInProgress;
+    private bool _launcherUpdateScheduled;
     private Process? _minecraftProcess;
 
     public MainWindow()
@@ -295,7 +296,7 @@ public partial class MainWindow : Window
 
     private async void PlayButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_playInProgress)
+        if (_playInProgress || _launcherUpdateScheduled)
             return;
 
         _playInProgress = true;
@@ -820,6 +821,13 @@ public partial class MainWindow : Window
                 return false;
             }
 
+            // From this point the current process must only perform the
+            // launcher replacement/restart. It must never continue into the
+            // Minecraft launch flow.
+            _launcherUpdateScheduled = true;
+            PlayButton.IsEnabled = false;
+            ExitButton.IsEnabled = false;
+            SetStatus($"HVMC {tag} wordt opnieuw gestart...");
             ScheduleSilentLauncherReplacement(temp, currentExe);
             return true;
         }
