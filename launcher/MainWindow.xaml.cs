@@ -371,6 +371,12 @@ public partial class MainWindow : Window
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             HideLoading();
+
+            // Minecraft is now actually running. Keep the play button visibly
+            // disabled so users cannot mistake an active session for another
+            // launch action.
+            PlayButton.Content = "MINECRAFT DRAAIT";
+            PlayButton.IsEnabled = false;
             SetStatus("Minecraft draait.");
             await SendLeaseHeartbeatAsync(_clientId, _deviceToken, _leaseId);
             StartLeaseHeartbeat(_clientId, _deviceToken, _leaseId);
@@ -409,7 +415,8 @@ public partial class MainWindow : Window
             await ReleaseLeaseSafeAsync();
             await EnsurePreviousMinecraftProcessStoppedAsync();
             _playInProgress = false;
-            PlayButton.IsEnabled = true;
+            PlayButton.Content = "SPELEN";
+            PlayButton.IsEnabled = !AuthorizationPanel.IsVisible;
             ExitButton.IsEnabled = true;
             // Do not overwrite an error status with "Klaar om te spelen".
             if (AuthorizationPanel.Visibility != Visibility.Visible && !_deviceBlocked
