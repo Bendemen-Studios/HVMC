@@ -226,7 +226,7 @@ public partial class MainWindow : Window
             if (!DateTimeOffset.TryParse(text, out var lastCheck))
                 return true;
 
-            return DateTimeOffset.UtcNow - lastCheck >= TimeSpan.FromHours(6);
+            return DateTimeOffset.UtcNow - lastCheck >= TimeSpan.FromMinutes(5);
         }
         catch
         {
@@ -750,8 +750,18 @@ public partial class MainWindow : Window
         Version? remoteVersion = null;
         try
         {
-            using var versionResponse = await _http.GetAsync(
+            using var versionRequest = new HttpRequestMessage(
+                HttpMethod.Get,
                 "https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/version.txt");
+            versionRequest.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+            {
+                NoCache = true,
+                NoStore = true,
+                MaxAge = TimeSpan.Zero
+            };
+            versionRequest.Headers.Pragma.ParseAdd("no-cache");
+            versionRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-cache, no-store, max-age=0");
+            using var versionResponse = await _http.SendAsync(versionRequest, HttpCompletionOption.ResponseHeadersRead);
             if (!versionResponse.IsSuccessStatusCode)
             {
                 WriteLauncherLog($"Launcher releasecontrole overgeslagen: version.txt gaf HTTP {(int)versionResponse.StatusCode}.");
