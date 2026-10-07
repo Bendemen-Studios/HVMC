@@ -56,7 +56,7 @@ begin
     is replaced. This prevents ERROR_SHARING_VIOLATION / code 5 on machines
     where Windows Restart Manager cannot close the WPF process. }
   Exec(
-    ExpandConstant('{sys}	askkill.exe'),
+    ExpandConstant('{sys}\taskkill.exe'),
     '/F /T /IM "HVMC.exe"',
     '',
     SW_HIDE,
