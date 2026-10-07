@@ -1,0 +1,149 @@
+name: Build cross-platform release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing GitHub release tag to build assets for, for example v3.63"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.rid }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-x64
+            asset: HVMC-macos-x64.zip
+            kind: macos
+          - rid: osx-arm64
+            asset: HVMC-macos-arm64.zip
+            kind: macos
+          - rid: linux-x64
+            asset: HVMC-linux-x64.tar.gz
+            kind: linux
+          - rid: linux-arm64
+            asset: HVMC-linux-arm64.tar.gz
+            kind: linux
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_TAG: ${{ inputs.release_tag || '' }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $TAG"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - run: dotnet restore launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+      - run: >
+          dotnet publish launcher-crossplatform/HVMCLauncher.CrossPlatform.csproj
+          --configuration Release
+          --runtime ${{ matrix.rid }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o artifacts/publish
+
+      - name: Package macOS app
+        if: matrix.kind == 'macos'
+        shell: bash
+        run: |
+          test -f artifacts/publish/HVMC
+          mkdir -p artifacts/package/HVMC.app/Contents/MacOS
+          cp artifacts/publish/HVMC artifacts/package/HVMC.app/Contents/MacOS/HVMC
+          chmod +x artifacts/package/HVMC.app/Contents/MacOS/HVMC
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > artifacts/package/HVMC.app/Contents/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>HVMC</string>
+            <key>CFBundleIdentifier</key><string>nl.hvmc.launcher</string>
+            <key>CFBundleName</key><string>HVMC School Launcher</string>
+            <key>CFBundleDisplayName</key><string>HVMC School Launcher</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${VERSION}.0</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+          </dict></plist>
+          EOF
+          (cd artifacts/package && zip -qr "../${{ matrix.asset }}" HVMC.app)
+          test -s "artifacts/${{ matrix.asset }}"
+
+      - name: Package Linux
+        if: matrix.kind == 'linux'
+        shell: bash
+        run: |
+          test -f artifacts/publish/HVMC
+          chmod +x artifacts/publish/HVMC
+          tar -C artifacts/publish -czf "artifacts/${{ matrix.asset }}" HVMC
+          test -s "artifacts/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: artifacts/${{ matrix.asset }}
+
+  publish:
+    name: Attach cross-platform assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_TAG: ${{ inputs.release_tag || '' }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+
+      - name: Flatten release assets
+        shell: bash
+        run: |
+          find release-assets -type f -maxdepth 3 -print -exec cp {} . \;
+          ls -lh HVMC-*.zip HVMC-*.tar.gz
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: gh release view "$TAG" --repo "${{ github.repository }}"
+
+      - name: Upload cross-platform assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          files: |
+            HVMC-macos-x64.zip
+            HVMC-macos-arm64.zip
+            HVMC-linux-x64.tar.gz
+            HVMC-linux-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

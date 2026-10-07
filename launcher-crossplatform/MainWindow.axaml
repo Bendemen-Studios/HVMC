@@ -1,0 +1,35 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="HVMCLauncher.CrossPlatform.MainWindow"
+        Title="HVMC School Launcher"
+        Width="520" Height="650" MinWidth="460" MinHeight="580"
+        CanResize="False"
+        Background="#F7F4EC" Foreground="#27241E">
+  <Grid RowDefinitions="*,Auto,*,Auto" Margin="42">
+    <StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+      <TextBlock Text="HVMC" FontSize="78" FontWeight="Bold" Foreground="#B8871F" HorizontalAlignment="Center"/>
+      <TextBlock Text="SCHOOL LAUNCHER" FontSize="16" FontWeight="SemiBold" Foreground="#746B5B" HorizontalAlignment="Center"/>
+    </StackPanel>
+    <TextBlock x:Name="StatusText" Grid.Row="1" Text="Klaar om te spelen." FontSize="14"
+               Foreground="#746B5B" TextAlignment="Center" HorizontalAlignment="Center" Margin="0,20"/>
+    <StackPanel Grid.Row="2" VerticalAlignment="Center" Margin="55,0">
+      <StackPanel x:Name="AuthorizationPanel" IsVisible="False">
+        <TextBlock Text="PC AUTORISEREN" FontSize="18" FontWeight="Bold" Foreground="#B8871F" HorizontalAlignment="Center"/>
+        <TextBlock Text="Vraag een eenmalige code aan de beheerder." TextAlignment="Center"
+                   TextWrapping="Wrap" Foreground="#746B5B" Margin="0,8,0,14"/>
+        <TextBox x:Name="AuthorizationCodeBox" Height="52" FontSize="22" FontWeight="Bold"
+                 MaxLength="10" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Margin="0,0,0,12"/>
+        <Button x:Name="AuthorizeButton" Content="PC AUTORISEREN" Height="58" FontSize="18"
+                FontWeight="Bold" Foreground="#261E0B" Background="#D7A62F" Click="AuthorizeButton_Click"/>
+      </StackPanel>
+      <Button x:Name="PlayButton" Content="SPELEN" Height="76" Margin="0,0,0,18"
+              FontSize="25" FontWeight="Bold" Foreground="#261E0B" Background="#D7A62F" Click="PlayButton_Click"/>
+      <Button x:Name="ExitButton" Content="AFSLUITEN" Height="62" FontSize="18" FontWeight="SemiBold"
+              Foreground="#4B463D" Background="#FFFFFF" Click="ExitButton_Click"/>
+    </StackPanel>
+    <StackPanel Grid.Row="3" HorizontalAlignment="Center" Margin="0,25,0,0">
+      <TextBlock Text="Bendemen Studios" FontSize="12" Foreground="#9A907D" HorizontalAlignment="Center"/>
+      <TextBlock x:Name="VersionText" FontSize="11" Foreground="#AAA18F" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+    </StackPanel>
+  </Grid>
+</Window>
