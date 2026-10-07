@@ -96,6 +96,7 @@ public partial class MainWindow : Window
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
     private readonly string _launcherLogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC", "launcher.log");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
+    private static readonly TimeSpan LauncherVersionCheckTimeout = TimeSpan.FromSeconds(8);
     private readonly HttpClient _minecraftHttp = CreateMinecraftHttpClient();
     private string? _clientId;
     private string? _deviceToken;
@@ -767,6 +768,20 @@ public partial class MainWindow : Window
         // release workflow creates the matching vX.Y tag/release and publishes
         // HVMC.exe under the predictable GitHub release-download URL.
         Version? remoteVersion = null;
+        var localVersionPath = Path.Combine(_root, "launcher-version.txt");
+
+        // Keep the installed version available locally as a simple major.minor
+        // value. The actual update decision still uses the fresh remote value.
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.WriteAllText(localVersionPath, $"{currentVersion.Major}.{currentVersion.Minor}");
+        }
+        catch
+        {
+            // Local version bookkeeping must never block startup.
+        }
+
         try
         {
             using var versionRequest = new HttpRequestMessage(
@@ -780,7 +795,8 @@ public partial class MainWindow : Window
             };
             versionRequest.Headers.Pragma.ParseAdd("no-cache");
             versionRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-cache, no-store, max-age=0");
-            using var versionResponse = await _http.SendAsync(versionRequest, HttpCompletionOption.ResponseHeadersRead);
+            using var versionCts = new CancellationTokenSource(LauncherVersionCheckTimeout);
+            using var versionResponse = await _http.SendAsync(versionRequest, HttpCompletionOption.ResponseHeadersRead, versionCts.Token);
             if (!versionResponse.IsSuccessStatusCode)
             {
                 WriteLauncherLog($"Launcher releasecontrole overgeslagen: version.txt gaf HTTP {(int)versionResponse.StatusCode}.");
