@@ -289,13 +289,13 @@ public sealed class LauncherUpdateService
                 $"DST='{EscapeShell(target)}'",
                 "sleep 1",
                 "deadline=$(( $(date +%s) + 30 ))",
-                "while kill -0 "$PID" 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done",
-                "if kill -0 "$PID" 2>/dev/null; then exit 1; fi",
-                "if ! mv -f -- "$SRC" "$DST"; then exit 1; fi",
-                "chmod +x -- "$DST"",
+                @"while kill -0 ""$PID"" 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done",
+                @"if kill -0 ""$PID"" 2>/dev/null; then exit 1; fi",
+                @"if ! mv -f -- ""$SRC"" ""$DST""; then exit 1; fi",
+                @"chmod +x -- ""$DST""",
                 cleanup,
-                "rm -f -- "$0"",
-                "nohup "$DST" >/dev/null 2>&1 &"
+                @"rm -f -- ""$0""",
+                @"nohup ""$DST"" >/dev/null 2>&1 &"
             }) + Environment.NewLine;
 
             await File.WriteAllTextAsync(
