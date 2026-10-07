@@ -107,6 +107,7 @@ public partial class MainWindow : Window
     private bool _deviceBlocked;
     private bool _playInProgress;
     private bool _launcherUpdateScheduled;
+    private Task<bool>? _startupVersionCheckTask;
     private Process? _minecraftProcess;
 
     public MainWindow()
@@ -168,34 +169,24 @@ public partial class MainWindow : Window
     {
         try
         {
-            // Start the release-version check immediately and in parallel with
-            // PC authorization. Neither network request needs the other, so
-            // startup is no longer slowed down by sequential checks.
-            var updateTask = !_playInProgress
-                ? CheckForLauncherUpdateAsync()
-                : Task.FromResult(false);
+            // Start the version check immediately, but never make the launcher
+            // wait for GitHub before becoming usable. If the user clicks Play
+            // while the check is still running, PlayButton_Click will await it
+            // before starting Minecraft.
+            _startupVersionCheckTask = CheckForLauncherUpdateAsync();
 
-            Task<bool>? authorizationTask = null;
             if (!string.IsNullOrWhiteSpace(_deviceToken))
-                authorizationTask = EnsurePcAuthorizedAsync();
-
-            if (authorizationTask is not null)
             {
-                var authorized = await authorizationTask;
+                var authorized = await EnsurePcAuthorizedAsync();
                 if (!authorized)
                 {
                     PlayButton.IsEnabled = false;
-                    await updateTask;
                     return;
                 }
 
                 await SendPcHeartbeatAsync();
                 StartPcHeartbeat();
             }
-
-            // Wait for the version check before enabling Play. If an update
-            // was scheduled, the launcher exits through the replacement helper.
-            await updateTask;
 
             if (!_launcherUpdateScheduled && AuthorizationPanel.Visibility != Visibility.Visible)
             {
@@ -209,8 +200,6 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            // Startup maintenance must never turn a working launcher into a
-            // startup error. The Play flow performs the required checks again.
             WriteLauncherLog($"Achtergrond-startupcontrole mislukt: {ex.Message}");
             if (AuthorizationPanel.Visibility != Visibility.Visible && !_launcherUpdateScheduled)
             {
@@ -269,6 +258,21 @@ public partial class MainWindow : Window
     {
         if (_playInProgress || _launcherUpdateScheduled)
             return;
+
+        if (_startupVersionCheckTask is not null)
+        {
+            try
+            {
+                await _startupVersionCheckTask;
+            }
+            catch (Exception ex)
+            {
+                WriteLauncherLog($"Startup-versiecontrole gaf een fout vóór starten: {ex.Message}");
+            }
+
+            if (_launcherUpdateScheduled)
+                return;
+        }
 
         _playInProgress = true;
         PlayButton.IsEnabled = false;
