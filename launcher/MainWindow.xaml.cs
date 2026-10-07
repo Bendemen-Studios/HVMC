@@ -702,13 +702,62 @@ public partial class MainWindow : Window
         Dispatcher.Invoke(() => LoadingOverlay.Visibility = Visibility.Collapsed);
     }
 
+    private Version GetInstalledLauncherVersion()
+    {
+        var versionPath = Path.Combine(_root, "launcher-version.txt");
+
+        try
+        {
+            if (File.Exists(versionPath))
+            {
+                var saved = File.ReadAllText(versionPath).Trim();
+                if (Version.TryParse(saved, out var localVersion))
+                    return localVersion;
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteLauncherLog($"Lokale launcherversie kon niet worden gelezen: {ex.Message}");
+        }
+
+        if (!Version.TryParse(LauncherVersion, out var assemblyVersion))
+            throw new InvalidOperationException($"Ongeldige launcher-versie: {LauncherVersion}");
+
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.WriteAllText(versionPath, assemblyVersion.ToString(3));
+        }
+        catch (Exception ex)
+        {
+            WriteLauncherLog($"Lokale launcherversie kon niet worden opgeslagen: {ex.Message}");
+        }
+
+        return assemblyVersion;
+    }
+
+    private void SaveInstalledLauncherVersion(Version version)
+    {
+        try
+        {
+            Directory.CreateDirectory(_root);
+            File.WriteAllText(
+                Path.Combine(_root, "launcher-version.txt"),
+                version.ToString(3));
+        }
+        catch (Exception ex)
+        {
+            WriteLauncherLog($"Lokale launcherversie kon niet worden opgeslagen: {ex.Message}");
+        }
+    }
+
     private async Task<bool> CheckForLauncherUpdateAsync()
     {
         var currentExe = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(currentExe) || !File.Exists(currentExe)) return false;
 
-        if (!Version.TryParse(LauncherVersion, out var currentVersion))
-            return false;
+        var currentVersion = GetInstalledLauncherVersion();
+        SaveInstalledLauncherVersion(currentVersion);
 
         // Do NOT use api.github.com here. This code runs on every installed
         // launcher and unauthenticated GitHub REST API calls are rate-limited.
@@ -746,6 +795,7 @@ public partial class MainWindow : Window
             }
 
             remoteVersion = parsedRemoteVersion;
+            WriteLauncherLog($"Launcherversies vergeleken: lokaal {currentVersion} / remote {remoteVersion}.");
         }
         catch (Exception ex)
         {
@@ -756,7 +806,13 @@ public partial class MainWindow : Window
         }
 
         if (remoteVersion <= currentVersion)
+        {
+            // Keep the local version file synchronized with the version that
+            // is actually installed, but never downgrade it from a newer
+            // local build.
+            SaveInstalledLauncherVersion(currentVersion);
             return false;
+        }
 
         var tag = $"v{remoteVersion}";
         var assetUrl = $"https://github.com/Bendemen-Studios/HVMC/releases/download/{tag}/HVMC.exe";
