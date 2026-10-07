@@ -158,10 +158,9 @@ public partial class MainWindow : Window
 
         WriteLauncherLog($"Launcher versie {LauncherVersion}, Minecraft {MinecraftVersion}, Fabric {FabricVersion}.");
 
-        // Network checks continue after the UI is usable. Launcher update
-        // checks are deliberately delayed and cached so a normal startup does
-        // not wait on GitHub at all.
-        _ = InitializeStartupChecksAsync();
+        // Network checks continue after the UI is usable. Every launcher
+        // startup performs a fresh release-version check so a newly published
+        // launcher is picked up on the next startup.
     }
 
     private async Task InitializeStartupChecksAsync()
@@ -183,19 +182,13 @@ public partial class MainWindow : Window
                 PlayButton.IsEnabled = true;
             }
 
-            // Do not make launcher startup depend on GitHub. Check for a new
-            // launcher only after the window is responsive and only once per
-            // cache period. The Play button has its own authoritative checks.
-            if (ShouldCheckLauncherUpdate())
-            {
-                await Task.Delay(TimeSpan.FromSeconds(5));
-                if (_playInProgress || !ShouldCheckLauncherUpdate())
-                    return;
+            // Always check the current release version on every startup.
+            // The version request itself is explicitly no-cache, so a newly
+            // published release is detected without waiting for a local cache.
+            if (_playInProgress)
+                return;
 
-                var updated = await CheckForLauncherUpdateAsync();
-                if (!updated)
-                    SaveLauncherUpdateCheck();
-            }
+            await CheckForLauncherUpdateAsync();
         }
         catch (DeviceBlockedException)
         {
@@ -211,41 +204,6 @@ public partial class MainWindow : Window
                 SetStatus("Klaar om te spelen.");
                 PlayButton.IsEnabled = true;
             }
-        }
-    }
-
-    private bool ShouldCheckLauncherUpdate()
-    {
-        try
-        {
-            var path = Path.Combine(_root, "launcher-update-check.txt");
-            if (!File.Exists(path))
-                return true;
-
-            var text = File.ReadAllText(path).Trim();
-            if (!DateTimeOffset.TryParse(text, out var lastCheck))
-                return true;
-
-            return DateTimeOffset.UtcNow - lastCheck >= TimeSpan.FromMinutes(5);
-        }
-        catch
-        {
-            return true;
-        }
-    }
-
-    private void SaveLauncherUpdateCheck()
-    {
-        try
-        {
-            Directory.CreateDirectory(_root);
-            File.WriteAllText(
-                Path.Combine(_root, "launcher-update-check.txt"),
-                DateTimeOffset.UtcNow.ToString("O"));
-        }
-        catch
-        {
-            // A failed cache write must never affect launcher startup.
         }
     }
 
