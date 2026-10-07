@@ -96,7 +96,7 @@ public partial class MainWindow : Window
     private readonly string _root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC");
     private readonly string _launcherLogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bendemen", "HVMC", "launcher.log");
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(45) };
-    private static readonly TimeSpan LauncherVersionCheckTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan LauncherVersionCheckTimeout = TimeSpan.FromSeconds(3);
     private readonly HttpClient _minecraftHttp = CreateMinecraftHttpClient();
     private string? _clientId;
     private string? _deviceToken;
@@ -784,17 +784,11 @@ public partial class MainWindow : Window
 
         try
         {
-            using var versionRequest = new HttpRequestMessage(
-                HttpMethod.Get,
-                "https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/version.txt");
-            versionRequest.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
-            {
-                NoCache = true,
-                NoStore = true,
-                MaxAge = TimeSpan.Zero
-            };
-            versionRequest.Headers.Pragma.ParseAdd("no-cache");
-            versionRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-cache, no-store, max-age=0");
+            // Use a tiny cache-busting query instead of forcing no-cache
+            // headers. This keeps the request fresh without unnecessarily
+            // forcing extra proxy/CDN work.
+            var versionUrl = $"https://raw.githubusercontent.com/Bendemen-Studios/HVMC/main/version.txt?startup={DateTimeOffset.UtcNow.Ticks}";
+            using var versionRequest = new HttpRequestMessage(HttpMethod.Get, versionUrl);
             using var versionCts = new CancellationTokenSource(LauncherVersionCheckTimeout);
             using var versionResponse = await _http.SendAsync(versionRequest, HttpCompletionOption.ResponseHeadersRead, versionCts.Token);
             if (!versionResponse.IsSuccessStatusCode)
