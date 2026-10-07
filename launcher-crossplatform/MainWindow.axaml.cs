@@ -185,7 +185,15 @@ public partial class MainWindow : Window
 
             _contentUpdateFailed = false;
             SetStatus("HVMC content synchroniseren...");
-            await _content.SyncAsync();
+            try
+            {
+                await _content.SyncAsync();
+            }
+            catch
+            {
+                _contentUpdateFailed = true;
+                throw;
+            }
 
             SetStatus("Minecraft voorbereiden...");
             var lease = await _accounts.AcquireLeaseAsync();
@@ -235,7 +243,10 @@ public partial class MainWindow : Window
         {
             _log.Error($"Minecraft starten mislukt: {ex}");
             SetStatus("Minecraft is gestopt of kon niet starten.");
-            await ShowErrorAsync("Minecraft starten mislukt", FriendlyError(ex));
+            await ShowErrorAsync(
+                "Minecraft starten mislukt",
+                FriendlyError(ex),
+                allowContentRetry: _contentUpdateFailed);
         }
         finally
         {
