@@ -827,32 +827,77 @@ public partial class MainWindow : Window
     private static void ScheduleSilentLauncherReplacement(string downloadedExe, string currentExe)
     {
         var pid = Environment.ProcessId;
+        var root = Path.GetDirectoryName(currentExe) ?? AppContext.BaseDirectory;
+        var scriptPath = Path.Combine(root, $"HVMC-launcher-replace-{Guid.NewGuid():N}.ps1");
+        var backupPath = currentExe + ".update-backup";
 
-        static string Ps(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
-        var script =
-            $"$pid={pid};$source={Ps(downloadedExe)};$target={Ps(currentExe)};" +
-            "Start-Sleep -Milliseconds 800;" +
-            $"while(Get-Process -Id $pid -ErrorAction SilentlyContinue){{Start-Sleep -Milliseconds 200}};" +
-            "$replaced=$false;" +
-            "for($attempt=1;$attempt -le 30 -and -not $replaced;$attempt++){" +
-            "try{" +
-            "Move-Item -LiteralPath $source -Destination $target -Force -ErrorAction Stop;" +
-            "$replaced=$true;" +
-            "}catch{Start-Sleep -Milliseconds 500}}" +
-            "if(-not $replaced){try{Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue}catch{};exit 1};" +
-            $"Start-Process -FilePath $target;";
+        static string Ps(string value) =>
+            "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+
+        // Use a real .ps1 file so Windows paths with spaces cannot break
+        // PowerShell command-line quoting during a self-update.
+        var script = string.Join(Environment.NewLine, new[]
+        {
+            "$ErrorActionPreference = 'Stop'",
+            "$replaced = $false",
+            "try {",
+            "  Start-Sleep -Milliseconds 1000",
+            "  $deadline = (Get-Date).AddSeconds(30)",
+            "  while ((Get-Date) -lt $deadline -and (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 250 }",
+            "  if (Get-Process -Id $LauncherPid -ErrorAction SilentlyContinue) { throw 'De oude HVMC-launcher is na 30 seconden nog actief.' }",
+            "  $deadline = (Get-Date).AddSeconds(30)",
+            "  while ((Get-Date) -lt $deadline -and -not $replaced) {",
+            "    try {",
+            "      if (Test-Path -LiteralPath $BackupPath) { Remove-Item -LiteralPath $BackupPath -Force -ErrorAction Stop }",
+            "      if (Test-Path -LiteralPath $TargetPath) { Move-Item -LiteralPath $TargetPath -Destination $BackupPath -Force -ErrorAction Stop }",
+            "      Move-Item -LiteralPath $SourcePath -Destination $TargetPath -Force -ErrorAction Stop",
+            "      if (-not (Test-Path -LiteralPath $TargetPath)) { throw 'Nieuwe HVMC.exe is na vervangen niet gevonden.' }",
+            "      $replaced = $true",
+            "    } catch {",
+            "      try { if (-not (Test-Path -LiteralPath $TargetPath) -and (Test-Path -LiteralPath $BackupPath)) { Move-Item -LiteralPath $BackupPath -Destination $TargetPath -Force -ErrorAction SilentlyContinue } } catch {}",
+            "      Start-Sleep -Milliseconds 500",
+            "    }",
+            "  }",
+            "  if (-not $replaced) { throw 'HVMC.exe kon niet binnen 30 seconden worden vervangen.' }",
+            "  Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue",
+            "  Start-Process -FilePath $TargetPath",
+            "} catch {",
+            "  try { if (-not (Test-Path -LiteralPath $TargetPath) -and (Test-Path -LiteralPath $BackupPath)) { Move-Item -LiteralPath $BackupPath -Destination $TargetPath -Force -ErrorAction SilentlyContinue } } catch {}",
+            "  try { if (Test-Path -LiteralPath $TargetPath) { Start-Process -FilePath $TargetPath } } catch {}",
+            "} finally {",
+            "  try { if (Test-Path -LiteralPath $SourcePath) { Remove-Item -LiteralPath $SourcePath -Force -ErrorAction SilentlyContinue } } catch {}",
+            "  Start-Sleep -Milliseconds 300",
+            "  try { Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue } catch {}",
+            "}"
+        });
+
+        File.WriteAllText(scriptPath,
+            "$LauncherPid = " + pid + Environment.NewLine +
+            "$SourcePath = " + Ps(downloadedExe) + Environment.NewLine +
+            "$TargetPath = " + Ps(currentExe) + Environment.NewLine +
+            "$BackupPath = " + Ps(backupPath) + Environment.NewLine +
+            "$ScriptPath = " + Ps(scriptPath) + Environment.NewLine + script,
+            new UTF8Encoding(false));
 
         Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            ArgumentList =
+            {
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-File", scriptPath
+            }
         });
 
+        // The helper owns the replacement from this point. The old launcher
+        // must exit before HVMC.exe can be renamed/replaced.
         Environment.Exit(0);
     }
-
     private async Task RunUpdaterAsync(bool forceRedownload = false)
     {
         ShowLoading(forceRedownload
