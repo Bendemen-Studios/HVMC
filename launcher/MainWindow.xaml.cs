@@ -167,22 +167,37 @@ public partial class MainWindow : Window
     {
         try
         {
-            // Always perform a fresh release-version check on every startup.
-            // There is intentionally no local cache or startup delay.
-            if (!_playInProgress)
-                await CheckForLauncherUpdateAsync();
+            // Start the release-version check immediately and in parallel with
+            // PC authorization. Neither network request needs the other, so
+            // startup is no longer slowed down by sequential checks.
+            var updateTask = !_playInProgress
+                ? CheckForLauncherUpdateAsync()
+                : Task.FromResult(false);
 
+            Task<bool>? authorizationTask = null;
             if (!string.IsNullOrWhiteSpace(_deviceToken))
+                authorizationTask = EnsurePcAuthorizedAsync();
+
+            if (authorizationTask is not null)
             {
-                var authorized = await EnsurePcAuthorizedAsync();
+                var authorized = await authorizationTask;
                 if (!authorized)
                 {
                     PlayButton.IsEnabled = false;
+                    await updateTask;
                     return;
                 }
 
                 await SendPcHeartbeatAsync();
                 StartPcHeartbeat();
+            }
+
+            // Wait for the version check before enabling Play. If an update
+            // was scheduled, the launcher exits through the replacement helper.
+            await updateTask;
+
+            if (!_launcherUpdateScheduled && AuthorizationPanel.Visibility != Visibility.Visible)
+            {
                 SetStatus("Klaar om te spelen.");
                 PlayButton.IsEnabled = true;
             }
@@ -196,7 +211,7 @@ public partial class MainWindow : Window
             // Startup maintenance must never turn a working launcher into a
             // startup error. The Play flow performs the required checks again.
             WriteLauncherLog($"Achtergrond-startupcontrole mislukt: {ex.Message}");
-            if (AuthorizationPanel.Visibility != Visibility.Visible)
+            if (AuthorizationPanel.Visibility != Visibility.Visible && !_launcherUpdateScheduled)
             {
                 SetStatus("Klaar om te spelen.");
                 PlayButton.IsEnabled = true;
