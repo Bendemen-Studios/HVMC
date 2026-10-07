@@ -190,6 +190,21 @@ public partial class MainWindow : Window
                 StartPcHeartbeat();
             }
 
+            // Do not enable Play until the startup release check has actually
+            // completed. This prevents a race where the UI says "Klaar om te
+            // spelen" while the version task is still running.
+            if (_startupVersionCheckTask is not null)
+            {
+                try
+                {
+                    await _startupVersionCheckTask;
+                }
+                catch (Exception ex)
+                {
+                    WriteLauncherLog($"Startup-versiecontrole kon niet worden afgerond: {ex.Message}");
+                }
+            }
+
             if (!_launcherUpdateScheduled && AuthorizationPanel.Visibility != Visibility.Visible)
             {
                 SetStatus("Klaar om te spelen.");
@@ -727,34 +742,13 @@ public partial class MainWindow : Window
 
     private Version GetInstalledLauncherVersion()
     {
-        var versionPath = Path.Combine(_root, "launcher-version.txt");
-
-        try
-        {
-            if (File.Exists(versionPath))
-            {
-                var saved = File.ReadAllText(versionPath).Trim();
-                if (Version.TryParse(saved, out var localVersion))
-                    return localVersion;
-            }
-        }
-        catch (Exception ex)
-        {
-            WriteLauncherLog($"Lokale launcherversie kon niet worden gelezen: {ex.Message}");
-        }
-
+        // The executable/assembly is the authoritative installed version.
+        // launcher-version.txt is bookkeeping only and must never be used to
+        // decide whether this executable needs an update. A stale file from an
+        // older launcher could otherwise make v3.76 look like v3.74/v3.75 and
+        // trigger a pointless self-update loop.
         if (!Version.TryParse(LauncherVersion, out var assemblyVersion))
             throw new InvalidOperationException($"Ongeldige launcher-versie: {LauncherVersion}");
-
-        try
-        {
-            Directory.CreateDirectory(_root);
-            File.WriteAllText(versionPath, assemblyVersion.ToString(3));
-        }
-        catch (Exception ex)
-        {
-            WriteLauncherLog($"Lokale launcherversie kon niet worden opgeslagen: {ex.Message}");
-        }
 
         return assemblyVersion;
     }
