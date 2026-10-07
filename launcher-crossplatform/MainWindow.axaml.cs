@@ -218,6 +218,10 @@ public partial class MainWindow : Window
                 _minecraftProcess.BeginOutputReadLine();
                 _minecraftProcess.BeginErrorReadLine();
 
+                // Keep the play button visibly disabled while Minecraft is running,
+                // so users cannot mistake an active session for another launch action.
+                PlayButton.IsEnabled = false;
+                PlayButton.Content = "MINECRAFT DRAAIT";
                 _accounts.StartLeaseHeartbeat();
                 SetStatus("Minecraft draait.");
 
@@ -255,6 +259,7 @@ public partial class MainWindow : Window
 
             if (!_blocked)
             {
+                PlayButton.Content = "SPELEN";
                 PlayButton.IsEnabled = !AuthorizationPanel.IsVisible;
                 ExitButton.IsEnabled = true;
 
