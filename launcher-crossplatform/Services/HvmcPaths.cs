@@ -28,6 +28,7 @@ public static class HvmcPaths
     public static string ClientId => Path.Combine(Root, "client-id.txt");
     public static string DeviceToken => Path.Combine(Root, "device.token");
     public static string LauncherLog => Path.Combine(Root, "launcher.log");
+    public static string LauncherUpdateCheck => Path.Combine(Root, "launcher-update-check.txt");
     public static string MinecraftLog => Path.Combine(Root, "minecraft-launch.log");
     public static string MinecraftDownloadLog => Path.Combine(Root, "minecraft-download.log");
     public static string ContentManifest => Path.Combine(Root, "content-manifest.json");
