@@ -25,11 +25,11 @@ PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\launcher\hvmc.ico
-CloseApplications=yes
+CloseApplications=force
+CloseApplicationsFilter=HVMC.exe
 RestartApplications=no
-; The installer is first-install/update-safe even when HVMC.exe is still running.
-; Restart Manager normally closes it, while PrepareToInstall provides a deterministic
-; fallback for machines where Restart Manager cannot obtain the executable handle.
+; The installer must be able to update HVMC.exe even when the previous launcher
+; instance is still running. Restart Manager force-closes the old instance first.
 
 [Files]
 Source: "..\artifacts\HVMCLauncher\HVMC.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
