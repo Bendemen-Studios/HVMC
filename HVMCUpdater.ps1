@@ -214,9 +214,9 @@ try {
         # The remote tree SHA already proved that this content has not changed upstream.
         $manifestMatch=($oldEntries.ContainsKey($relative) -and [string]$oldEntries[$relative] -eq $expectedSha)
         if(-not(Test-Path -LiteralPath $destination)){
-            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download}
+            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download;sha=$expectedSha}
         } elseif(-not $manifestMatch -and -not(Test-GitBlobSha $destination $expectedSha)){
-            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download}
+            $downloadQueue += [pscustomobject]@{path=[string]$file.path;relative=$relative;destination=$destination;download=[string]$file.download;sha=$expectedSha}
         }
         $newManifest[$relative]=$expectedSha
     }
