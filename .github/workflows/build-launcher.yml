@@ -72,11 +72,196 @@ jobs:
           $latestVersion = if ($latestTag) { $latestTag -replace '^v','' } else { '0.0' }
 
           if (-not [string]::IsNullOrWhiteSpace($env:REQUESTED_VERSION)) {
-            if ($env:REQUESTED_VERSION -notmatch '^\d+\.\d+$') {
-              throw 'release_version moet bijvoorbeeld 3.7 of 4.0 zijn.'
+            if ($env:REQUESTED_VERSION -notmatch '^v?\d+\.\d+
+            $targetMajor = [int]($target.Split('.')[0])
+            $latestMajor = [int]($latestVersion.Split('.')[0])
+
+            if ($targetMajor -gt $latestMajor -and $env:APPROVE_MAJOR -ne 'true') {
+              throw "Major release $target vereist expliciete goedkeuring via approve_major=true."
             }
 
-            $target = $env:REQUESTED_VERSION
+            if ($targetMajor -eq $latestMajor -and [int]($target.Split('.')[1]) -le [int]($latestVersion.Split('.')[1])) {
+              throw "Release $target is niet hoger dan de huidige release $latestVersion."
+            }
+
+            Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
+            Write-Host "Goedgekeurde release ingesteld op $target."
+          }
+          elseif ($remoteVersion -eq $latestVersion) {
+            $latestReleaseTag = "v$latestVersion"
+            & gh release view $latestReleaseTag --repo $env:GITHUB_REPOSITORY *> $null
+            $releaseCheckExitCode = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
+
+            if ($releaseCheckExitCode -ne 0) {
+              # The tag/release is missing, so rebuild the existing remote version.
+              $target = $remoteVersion
+              Write-Host "Release $latestReleaseTag ontbreekt; bestaande remote versie $target wordt hersteld."
+            }
+            else {
+              $major = [int]($remoteVersion.Split('.')[0])
+              $minor = [int]($remoteVersion.Split('.')[1]) + 1
+              $target = "$major.$minor"
+              Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
+              Write-Host "Automatische minor release: $target"
+            }
+          }
+          else {
+            $currentMajor = [int]($remoteVersion.Split('.')[0])
+            $latestMajor = [int]($latestVersion.Split('.')[0])
+
+            if ($currentMajor -lt $latestMajor) {
+              throw "version.txt op remote main ($remoteVersion) loopt achter op de laatste release ($latestVersion)."
+            }
+
+            if ($currentMajor -gt $latestMajor -and $env:APPROVE_MAJOR -ne 'true' -and $env:COMMIT_MESSAGE -notmatch '\[approve-major\]') {
+              throw "Major release $remoteVersion vereist expliciete toestemming. Gebruik [approve-major] in de commit of approve_major=true via workflow_dispatch."
+            }
+
+            $target = $remoteVersion
+            if ($current -ne $remoteVersion) {
+              Set-Content -LiteralPath 'version.txt' -Value $target -NoNewline
+            }
+            Write-Host "Vooraf ingestelde releaseversie gebruiken: $target"
+          }
+
+          "RELEASE_VERSION=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Commit automatic version bump
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin main --force
+          $remoteVersion = (git show 'origin/main:version.txt').Trim()
+          $localVersion = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+
+          if ($remoteVersion -eq $localVersion) {
+            Write-Host "Remote main bevat versie $remoteVersion al. Geen versiecommit nodig."
+            "RELEASE_VERSION=$remoteVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            exit 0
+          }
+
+          git add version.txt
+          if (git diff --cached --quiet) {
+            Write-Host "Geen automatische versiecommit nodig."
+            exit 0
+          }
+
+          git commit -m "Auto-bump launcher minor version [no-release]"
+
+          # The commit created above is based on the workflow checkout. Because
+          # another run may have updated main after checkout, rebase this commit
+          # onto the current remote main before pushing. This preserves all
+          # remote changes and makes the push fast-forwardable.
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            git fetch origin main --force
+            git rebase origin/main
+            if ($LASTEXITCODE -eq 0) {
+              git push origin HEAD:main
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "Automatische versiecommit naar main gepusht."
+                exit 0
+              }
+            }
+
+            if ($attempt -lt 3) {
+              Write-Host "Push/rebase poging $attempt mislukt; remote main wordt opnieuw opgehaald."
+              git rebase --abort 2>$null
+              Start-Sleep -Seconds ([Math]::Min(2 * $attempt, 5))
+              git fetch origin main --force
+
+              # Recreate the version commit on the latest remote main while
+              # retaining the desired release version from this run.
+              $targetVersion = $env:RELEASE_VERSION
+              git reset --hard origin/main
+              $latestRemoteVersion = (git show 'origin/main:version.txt').Trim()
+
+              if ($latestRemoteVersion -eq $targetVersion) {
+                Write-Host "Remote main bevat de gewenste versie $targetVersion al."
+                exit 0
+              }
+
+              Set-Content -LiteralPath 'version.txt' -Value $targetVersion -NoNewline
+              git add version.txt
+              git commit -m "Auto-bump launcher minor version [no-release]"
+            }
+          }
+
+          throw "Automatische versiecommit kon niet veilig naar main worden gepusht na 3 synchronisatiepogingen."
+
+      - name: Prepare launcher icon
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'launcher/hvmc.ico')) {
+            if (-not (Test-Path -LiteralPath 'launcher/hvmc.ico.b64')) {
+              throw 'Launcher icon ontbreekt.'
+            }
+            [IO.File]::WriteAllBytes(
+              'launcher/hvmc.ico',
+              [Convert]::FromBase64String([IO.File]::ReadAllText('launcher/hvmc.ico.b64'))
+            )
+          }
+
+      - name: Restore
+        run: dotnet restore launcher/HVMCLauncher.csproj
+
+      - name: Build launcher
+        run: dotnet publish launcher/HVMCLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/HVMCLauncher
+
+      - name: Verify launcher artifact
+        shell: pwsh
+        run: |
+          $exe = "artifacts/HVMCLauncher/HVMC.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "HVMC.exe ontbreekt na publish." }
+          $item = Get-Item -LiteralPath $exe
+          if ($item.Length -lt 1MB) { throw "HVMC.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
+          $pe = [IO.File]::ReadAllBytes($exe)
+          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMC.exe heeft geen geldige MZ/PE-header." }
+          Write-Host "Launcher artifact OK: $($item.Length) bytes"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build first-install setup
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_VERSION)) {
+            $env:RELEASE_VERSION = (Get-Content -LiteralPath 'version.txt' -Raw).Trim()
+          }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\HVMC.iss" "/DAppVersion=$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "HVMC first-install setup bouwen mislukt." }
+          $installer = "artifacts/HVMC/HVMC-Setup.exe"
+          if (-not (Test-Path -LiteralPath $installer)) { throw "HVMC-Setup.exe ontbreekt na build." }
+          $item = Get-Item -LiteralPath $installer
+          if ($item.Length -lt 1MB) { throw "HVMC-Setup.exe lijkt ongeldig of te klein ($($item.Length) bytes)." }
+          $pe = [IO.File]::ReadAllBytes($installer)
+          if ($pe.Length -lt 2 -or $pe[0] -ne 0x4D -or $pe[1] -ne 0x5A) { throw "HVMC-Setup.exe heeft geen geldige MZ/PE-header." }
+
+      - name: Create GitHub release from tag
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: HVMC Release v${{ env.RELEASE_VERSION }}
+          target_commitish: main
+          generate_release_notes: true
+          prerelease: false
+          files: |
+            artifacts/HVMCLauncher/HVMC.exe
+            artifacts/HVMC/HVMC-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+) {
+              throw 'release_version moet bijvoorbeeld 3.66 of v3.66 zijn.'
+            }
+
+            $target = $env:REQUESTED_VERSION.TrimStart('vV')
             $targetMajor = [int]($target.Split('.')[0])
             $latestMajor = [int]($latestVersion.Split('.')[0])
 
